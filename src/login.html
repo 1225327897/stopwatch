@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>须臾 · 登录</title>
+<link rel="stylesheet" href="login.css">
+</head>
+<body>
+<div id="auth-container">
+  <!-- Left: Carousel -->
+  <div id="auth-carousel">
+    <div class="carousel-slides" id="carousel-slides">
+      <div class="carousel-slide active">
+        <div class="carousel-graphic">
+          <svg viewBox="0 0 200 200" width="180" height="180">
+            <circle cx="100" cy="100" r="85" fill="none" stroke="#7c6ff7" stroke-width="3" stroke-dasharray="10 5">
+              <animateTransform attributeName="transform" type="rotate" from="0 100 100" to="360 100 100" dur="20s" repeatCount="indefinite"/>
+            </circle>
+            <circle cx="100" cy="100" r="60" fill="none" stroke="#a096ff" stroke-width="2" stroke-dasharray="6 4">
+              <animateTransform attributeName="transform" type="rotate" from="360 100 100" to="0 100 100" dur="15s" repeatCount="indefinite"/>
+            </circle>
+            <line x1="100" y1="100" x2="100" y2="30" stroke="#fff" stroke-width="4" stroke-linecap="round">
+              <animateTransform attributeName="transform" type="rotate" from="0 100 100" to="360 100 100" dur="60s" repeatCount="indefinite"/>
+            </line>
+            <line x1="100" y1="100" x2="145" y2="100" stroke="#7c6ff7" stroke-width="3" stroke-linecap="round">
+              <animateTransform attributeName="transform" type="rotate" from="360 100 100" to="0 100 100" dur="3600s" repeatCount="indefinite"/>
+            </line>
+            <circle cx="100" cy="100" r="6" fill="#fff"/>
+          </svg>
+        </div>
+        <h2>珍惜每一刻</h2>
+        <p>精准计时，让每一秒都有价值</p>
+      </div>
+      <div class="carousel-slide">
+        <div class="carousel-graphic">
+          <svg viewBox="0 0 200 200" width="180" height="180">
+            <rect x="40" y="50" width="120" height="100" rx="12" fill="none" stroke="#a096ff" stroke-width="3">
+              <animate attributeName="stroke-dasharray" values="0 340;340 0" dur="2s" fill="freeze"/>
+            </rect>
+            <text x="100" y="110" text-anchor="middle" fill="#fff" font-size="32" font-weight="900">🍅</text>
+            <text x="100" y="145" text-anchor="middle" fill="#a096ff" font-size="14">POMODORO</text>
+          </svg>
+        </div>
+        <h2>番茄工作法</h2>
+        <p>专注25分钟，休息5分钟，高效一整天</p>
+      </div>
+      <div class="carousel-slide">
+        <div class="carousel-graphic">
+          <svg viewBox="0 0 200 200" width="180" height="180">
+            <path d="M60 100 Q60 40 100 40 Q140 40 140 100 Q140 160 100 160" fill="none" stroke="#7c6ff7" stroke-width="3">
+              <animate attributeName="stroke-dasharray" values="0 400;400 0" dur="3s" fill="freeze"/>
+            </path>
+            <circle cx="100" cy="100" r="3" fill="#a096ff">
+              <animate attributeName="r" values="3;8;3" dur="2s" repeatCount="indefinite"/>
+              <animate attributeName="opacity" values="1;0.3;1" dur="2s" repeatCount="indefinite"/>
+            </circle>
+            <text x="100" y="200" text-anchor="middle" fill="#a096ff" font-size="12">🎵 禅 · 白噪音</text>
+          </svg>
+        </div>
+        <h2>禅模式</h2>
+        <p>雨声、海浪、篝火……沉浸专注环境</p>
+      </div>
+    </div>
+    <div class="carousel-dots" id="carousel-dots"></div>
+  </div>
+
+  <!-- Right: Auth Form -->
+  <div id="auth-form">
+    <!-- Login -->
+    <div id="login-panel" class="auth-panel active">
+      <div class="auth-logo">须臾</div>
+      <input id="login-user" type="text" placeholder="账号" autocomplete="username">
+      <div id="account-dropdown"></div>
+      <div class="pw-wrap">
+        <input id="login-pass" type="password" placeholder="密码" autocomplete="current-password">
+        <span class="pw-toggle" id="login-pw-toggle">👁</span>
+      </div>
+      <div id="login-error" class="auth-error"></div>
+      <label class="remember-me"><input type="checkbox" id="remember-pw"> 记住密码</label>
+      <button id="login-btn" class="auth-btn">登 录</button>
+      <div class="auth-switch">没有账号？<a id="to-register">去注册</a></div>
+    </div>
+    <!-- Register -->
+    <div id="register-panel" class="auth-panel">
+      <div class="auth-logo">须臾</div>
+      <input id="reg-user" type="text" placeholder="账号 (≥9位, 字母+数字)" autocomplete="username">
+      <div id="reg-user-hint" class="auth-hint"></div>
+      <div class="pw-wrap"><input id="reg-pass" type="password" placeholder="密码 (>6位)" autocomplete="new-password"><span class="pw-toggle" id="reg-pw-toggle">👁</span></div>
+      <div id="pw-strength"><span id="pw-strength-label"></span><span id="pw-strength-bar"></span></div>
+      <div class="pw-wrap"><input id="reg-pass2" type="password" placeholder="确认密码" autocomplete="new-password"><span class="pw-toggle" id="reg-pw2-toggle">👁</span></div>
+      <div id="reg-error" class="auth-error"></div>
+      <button id="register-btn" class="auth-btn">注 册</button>
+      <div class="auth-switch">已有账号？<a id="to-login">去登录</a></div>
+    </div>
+  </div>
+</div>
+<script src="login.js"></script>
+</body>
+</html>

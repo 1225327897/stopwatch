@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>须臾·时钟</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0a0a0f;color:#e0d8ff;font-family:'JetBrains Mono',Consolas,monospace;height:100vh;overflow:hidden;display:flex;align-items:center;justify-content:center;flex-direction:column;cursor:none;transition:opacity 0.25s ease}
+body.leaving{opacity:0}
+.clock-wrap{display:flex;align-items:center;gap:0}
+.digit-group{display:flex;gap:min(0.8rem,1vw)}
+.digit{width:min(180px,20vw);height:min(260px,30vw);position:relative;overflow:hidden;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:16px}
+.digit span{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:min(12rem,13vw);font-weight:900;color:#e0d8ff;transition:transform 0.35s cubic-bezier(0.4,0,0.2,1),opacity 0.35s}
+.digit span:last-child{transform:translateY(100%);opacity:0}
+.digit.flip span:first-child{transform:translateY(-100%);opacity:0}
+.digit.flip span:last-child{transform:translateY(0);opacity:1}
+.digit.fade span:first-child{opacity:0;transform:translateY(0)}
+.digit.fade span:last-child{opacity:1;transform:translateY(0)}
+.digit.glow{transition:box-shadow 0.4s}
+.digit.glow.flip,.digit.glow.fade{box-shadow:0 0 60px rgba(124,111,247,0.5)}
+.sep{font-size:min(8rem,9vw);font-weight:200;color:rgba(200,190,255,0.5);padding:0 min(0.6rem,1vw);animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.12}}
+#date-row{margin-top:min(3rem,3vh);display:flex;gap:2rem;align-items:center}
+#date{font-size:min(1.8rem,2.5vw);color:rgba(200,190,255,0.55);letter-spacing:0.15em;font-weight:300}
+#lunar{font-size:min(1.2rem,1.6vw);color:rgba(200,190,255,0.35)}
+.hint{position:fixed;bottom:2rem;font-size:0.85rem;color:rgba(255,255,255,0.15)}
+body[data-theme="light"] {background:#f5f5fa !important;color:#2a2040}
+body[data-theme="light"] .digit{background:rgba(0,0,0,0.03);border-color:rgba(0,0,0,0.08)}
+body[data-theme="light"] .digit span{color:#2a2040}
+body[data-theme="light"] .sep{color:rgba(100,80,160,0.4)}
+body[data-theme="light"] #date{color:rgba(100,80,160,0.5)}
+body[data-theme="light"] #lunar{color:rgba(100,80,160,0.35)}
+</style>
+</head>
+<body>
+<div class="clock-wrap">
+  <div class="digit-group"><div class="digit" id="d-h1"><span>-</span><span>-</span></div><div class="digit" id="d-h2"><span>-</span><span>-</span></div></div>
+  <span class="sep">:</span>
+  <div class="digit-group"><div class="digit" id="d-m1"><span>-</span><span>-</span></div><div class="digit" id="d-m2"><span>-</span><span>-</span></div></div>
+  <span class="sep">:</span>
+  <div class="digit-group"><div class="digit" id="d-s1"><span>-</span><span>-</span></div><div class="digit" id="d-s2"><span>-</span><span>-</span></div></div>
+</div>
+<div id="date-row"><span id="date"></span><span id="lunar"></span></div>
+<div class="hint">ESC 返回 · 点击返回</div>
+<script>
+(function(){
+  var style=localStorage.getItem('clock-style')||'flip';
+  var ids=['h1','h2','m1','m2','s1','s2'],digits={};
+  ids.forEach(function(id){digits[id]=document.getElementById('d-'+id);});
+  var t=localStorage.getItem('stopwatch-theme');
+  if(t)document.body.setAttribute('data-theme',t);
+
+  var stems=['甲','乙','丙','丁','戊','己','庚','辛','壬','癸'];
+  var branches=['子','丑','寅','卯','辰','巳','午','未','申','酉','戌','亥'];
+  var zodiac=['鼠','牛','虎','兔','龙','蛇','马','羊','猴','鸡','狗','猪'];
+  function ganzhi(year){var i=(year-4)%12;return stems[(year-4)%10]+branches[i]+zodiac[i];}
+  var cnNum='〇一二三四五六七八九';
+  function cnYear(y){var s='';String(y).split('').forEach(function(c){s+=cnNum[+c];});return s+'年';}
+  var cnMon=['','一','二','三','四','五','六','七','八','九','十','十一','十二'];
+  var cnDay=['一','二','三','四','五','六','七','八','九','十','十一','十二','十三','十四','十五','十六','十七','十八','十九','二十','二十一','二十二','二十三','二十四','二十五','二十六','二十七','二十八','二十九','三十','三十一'];
+  var enMon='January February March April May June July August September October November December'.split(' ');
+  var w=['日','一','二','三','四','五','六'];
+
+  function fmtDate(n){
+    var gz=ganzhi(n.getFullYear())+'年';
+    // 每次都从 localStorage 重新读取，确保日期格式切换实时生效
+    var fmt = (localStorage.getItem('clock-datefmt')||'chinese').trim();
+    var dateStr='';
+    var lunarEl = document.getElementById('lunar');
+    switch(fmt){
+      case 'ganzhi':
+        // 天干地支：lunar 显示干支年份，date 只显示月日星期
+        dateStr = (n.getMonth()+1)+'月'+n.getDate()+'日 星期'+w[n.getDay()];
+        lunarEl.textContent = gz;
+        break;
+      case 'chinese': dateStr=cnYear(n.getFullYear())+cnMon[n.getMonth()+1]+'月'+cnDay[n.getDate()-1]+'日 星期'+w[n.getDay()];lunarEl.textContent='';break;
+      case 'short': dateStr=n.getFullYear()+'年'+(n.getMonth()+1)+'月'+n.getDate()+'日';lunarEl.textContent='';break;
+      case 'english': dateStr=enMon[n.getMonth()]+' '+n.getDate()+', '+n.getFullYear()+' · '+['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][n.getDay()];lunarEl.textContent='';break;
+      default: dateStr=n.getFullYear()+'年'+(n.getMonth()+1)+'月'+n.getDate()+'日 星期'+w[n.getDay()];lunarEl.textContent='';
+    }
+    document.getElementById('date').textContent=dateStr;
+    return dateStr;
+  }
+
+  function update(f){
+    var n=new Date();
+    var h=String(n.getHours()).padStart(2,'0'),m=String(n.getMinutes()).padStart(2,'0'),s=String(n.getSeconds()).padStart(2,'0');
+    var v=[h[0],h[1],m[0],m[1],s[0],s[1]];
+    ids.forEach(function(id,i){
+      var el=digits[id],cur=el.getAttribute('data-v')||'';
+      if(cur===v[i]&&!f)return;
+      el.setAttribute('data-v',v[i]);
+      el.querySelector('span:first-child').textContent=cur||v[i];
+      el.querySelector('span:last-child').textContent=v[i];
+      el.classList.remove('flip','fade','glow');
+      void el.offsetWidth;
+      el.classList.add(style);
+      // glow 模式需要搭配 flip 才有可见动效
+      if (style === 'glow') el.classList.add('flip');
+    });
+    fmtDate(n);
+  }
+  update(true);setInterval(function(){update()},1000);
+  document.addEventListener('keydown',function(e){if(e.key==='Escape')goBack();});
+  document.addEventListener('click',function(){goBack();});
+  function goBack(){document.body.classList.add('leaving');setTimeout(function(){window.location.href='stopwatch.html';},250);}
+})();
+</script>
+</body>
+</html>

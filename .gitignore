@@ -1,0 +1,19 @@
+# PyInstaller 构建产物
+build/
+dist/
+*.exe
+
+# Python 缓存
+__pycache__/
+*.pyc
+
+# 用户数据（含登录态，不纳入版本控制）
+data/*.db
+
+# 临时诊断脚本
+diag_*.py
+live_test.py
+
+# IDE
+.vscode/
+.idea/
