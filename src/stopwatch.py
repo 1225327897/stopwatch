@@ -256,21 +256,54 @@ def start_server(port=51342):
 
 # ── pywebview Bridge ──
 class Api:
-    def __init__(self, w): self.window = w
-    def toggle_fullscreen(self): self.window.toggle_fullscreen()
-    def flash_window(self):
+    def __init__(self, w):
+        self.window = w
+        self._is_fullscreen = False
+        self._orig_rect = None
+        self._orig_style = None
+
+    def _find_window(self):
+        """用 EnumWindows 模糊匹配标题包含 APP_TITLE 的窗口。
+        解决不同页面 HTML <title> 不一致（登录页"须臾·登录"、时钟页"须臾·时钟"）
+        导致 FindWindowW 精确匹配失败的问题。"""
         try:
             import ctypes
             from ctypes import wintypes
             user32 = ctypes.windll.user32
-            # 64 位安全：显式声明返回类型，否则 HWND 默认按 c_int(32位) 返回会被截断
-            user32.FindWindowW.restype = wintypes.HWND
-            user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
-            hwnd = user32.FindWindowW(None, APP_TITLE)
+            user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+            user32.GetWindowTextLengthW.restype = ctypes.c_int
+            user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+            user32.GetWindowTextW.restype = ctypes.c_int
+            result = [None]
+
+            @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+            def callback(hwnd, lparam):
+                length = user32.GetWindowTextLengthW(hwnd)
+                if length > 0:
+                    buf = ctypes.create_unicode_buffer(length + 1)
+                    user32.GetWindowTextW(hwnd, buf, length + 1)
+                    if APP_TITLE in buf.value:
+                        result[0] = hwnd
+                        return False  # 找到即停
+                return True
+
+            self._enum_cb = callback  # 防止回调被 GC
+            user32.EnumWindows(callback, 0)
+            return result[0]
+        except:
+            return None
+
+    def flash_window(self):
+        """闪动任务栏提醒（不抢前台）。窗口最小化时用 SW_SHOWNOACTIVATE 恢复，
+        否则 FlashWindowEx(FLASHW_TIMERNOFG) 会因窗口已在前台而不闪。"""
+        try:
+            import ctypes
+            from ctypes import wintypes
+            user32 = ctypes.windll.user32
+            hwnd = self._find_window()
             if not hwnd: return
-            # 关键修复：窗口最小化时用 SW_SHOWNOACTIVATE(4) 恢复，不抢前台。
-            # 原代码用 SW_RESTORE(9) 会把窗口激活到前台，导致随后的
-            # FlashWindowEx(FLASHW_TIMERNOFG) 因“窗口已在前台”而不产生任务栏橙色闪动。
+            user32.IsIconic.argtypes = [wintypes.HWND]
+            user32.IsIconic.restype = wintypes.BOOL
             if user32.IsIconic(hwnd):
                 user32.ShowWindow(hwnd, 4)  # SW_SHOWNOACTIVATE
             class FLASHWINFO(ctypes.Structure):
@@ -282,15 +315,104 @@ class Api:
                     ("dwTimeout", ctypes.c_uint),
                 ]
             fi = FLASHWINFO()
-            fi.cbSize    = ctypes.sizeof(FLASHWINFO)
-            fi.hwnd      = hwnd
-            fi.dwFlags   = 0x3 | 0xC  # FLASHW_ALL(3) | FLASHW_TIMERNOFG(C) = 闪到窗口来到前台
-            fi.uCount    = 0
+            fi.cbSize = ctypes.sizeof(FLASHWINFO)
+            fi.hwnd = hwnd
+            fi.dwFlags = 0x3 | 0xC  # FLASHW_ALL | FLASHW_TIMERNOFG
+            fi.uCount = 0
             fi.dwTimeout = 0
             user32.FlashWindowEx.argtypes = [ctypes.c_void_p]
-            user32.FlashWindowEx.restype  = wintypes.BOOL
+            user32.FlashWindowEx.restype = wintypes.BOOL
             user32.FlashWindowEx(ctypes.byref(fi))
         except Exception as e: print(f"[flash] {e}")
+
+    def restore_window(self):
+        """从最小化状态恢复窗口并置前，然后闪动任务栏（倒计时结束时调用）。"""
+        try:
+            import ctypes
+            from ctypes import wintypes
+            user32 = ctypes.windll.user32
+            hwnd = self._find_window()
+            if not hwnd: return
+            user32.IsIconic.argtypes = [wintypes.HWND]
+            user32.IsIconic.restype = wintypes.BOOL
+            if user32.IsIconic(hwnd):
+                user32.ShowWindow(hwnd, 9)  # SW_RESTORE — 恢复窗口到正常大小
+            # 模拟 Alt 键按下/释放，绕过 SetForegroundWindow 的权限限制
+            user32.keybd_event(0x12, 0, 0, 0)       # VK_MENU down
+            user32.keybd_event(0x12, 0, 0x0002, 0)  # VK_MENU up
+            user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+            user32.SetForegroundWindow.restype = wintypes.BOOL
+            user32.SetForegroundWindow(hwnd)
+            # 闪动任务栏 5 次后停止
+            class FLASHWINFO(ctypes.Structure):
+                _fields_ = [
+                    ("cbSize",    ctypes.c_uint),
+                    ("hwnd",      wintypes.HWND),
+                    ("dwFlags",   ctypes.c_uint),
+                    ("uCount",    ctypes.c_uint),
+                    ("dwTimeout", ctypes.c_uint),
+                ]
+            fi = FLASHWINFO()
+            fi.cbSize = ctypes.sizeof(FLASHWINFO)
+            fi.hwnd = hwnd
+            fi.dwFlags = 0x3  # FLASHW_ALL
+            fi.uCount = 5
+            fi.dwTimeout = 0
+            user32.FlashWindowEx.argtypes = [ctypes.c_void_p]
+            user32.FlashWindowEx.restype = wintypes.BOOL
+            user32.FlashWindowEx(ctypes.byref(fi))
+        except Exception as e: print(f"[restore] {e}")
+
+    def toggle_fullscreen(self):
+        """真全屏：去掉标题栏和边框，窗口铺满整个屏幕（任务栏不可见）。"""
+        try:
+            import ctypes
+            from ctypes import wintypes
+            user32 = ctypes.windll.user32
+            hwnd = self._find_window()
+            if not hwnd:
+                self.window.toggle_fullscreen()
+                return
+            GWL_STYLE = -16
+            WS_CAPTION    = 0x00C00000
+            WS_THICKFRAME = 0x00040000
+            WS_MINIMIZEBOX = 0x00020000
+            WS_MAXIMIZEBOX = 0x00010000
+            WS_SYSMENU    = 0x00080000
+            SWP_FRAMECHANGED = 0x0020
+            SWP_NOZORDER     = 0x0004
+            SWP_SHOWWINDOW   = 0x0040
+            user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+            user32.GetWindowLongW.restype = wintypes.LONG
+            user32.SetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int, wintypes.LONG]
+            user32.SetWindowLongW.restype = wintypes.LONG
+            user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+            user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_uint]
+            style = user32.GetWindowLongW(hwnd, GWL_STYLE)
+            if not self._is_fullscreen:
+                # 保存原始窗口位置和样式
+                rect = wintypes.RECT()
+                user32.GetWindowRect(hwnd, ctypes.byref(rect))
+                self._orig_rect = (rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top)
+                self._orig_style = style
+                # 去掉标题栏、边框、系统菜单
+                new_style = style & ~(WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU)
+                user32.SetWindowLongW(hwnd, GWL_STYLE, new_style)
+                # 铺满主显示器（任务栏会被覆盖）
+                sw = user32.GetSystemMetrics(0)  # SM_CXSCREEN
+                sh = user32.GetSystemMetrics(1)  # SM_CYSCREEN
+                user32.SetWindowPos(hwnd, 0, 0, 0, sw, sh, SWP_FRAMECHANGED | SWP_NOZORDER | SWP_SHOWWINDOW)
+                self._is_fullscreen = True
+            else:
+                # 恢复原始样式和位置
+                user32.SetWindowLongW(hwnd, GWL_STYLE, self._orig_style)
+                x, y, w, h = self._orig_rect
+                user32.SetWindowPos(hwnd, 0, x, y, w, h, SWP_FRAMECHANGED | SWP_NOZORDER | SWP_SHOWWINDOW)
+                self._is_fullscreen = False
+        except Exception as e:
+            print(f"[fullscreen] {e}")
+            self.window.toggle_fullscreen()
+
     def alert_sound(self):
         try: import winsound; winsound.MessageBeep(0x40)
         except: pass
@@ -302,7 +424,7 @@ def main():
     url = f'http://127.0.0.1:{port}/login.html'
     win = webview.create_window(title=APP_TITLE, url=url, width=APP_WIDTH, height=APP_HEIGHT, min_size=(800,600), resizable=True)
     api = Api(win)
-    win.expose(api.toggle_fullscreen, api.flash_window, api.alert_sound, api.minimize)
+    win.expose(api.toggle_fullscreen, api.flash_window, api.restore_window, api.alert_sound, api.minimize)
     webview.start(debug=False, http_server=False, gui='edgechromium')
 
 if __name__ == '__main__': main()

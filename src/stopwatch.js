@@ -120,7 +120,6 @@
     setCountdown() {
       const h=parseInt($('#cd-h').value)||0,m=parseInt($('#cd-m').value)||0,s=parseInt($('#cd-s').value)||0;
       this.countdownTotal=(h*3600+m*60+s)*1000;
-      if(this.countdownTotal<=0){this.countdownTotal=5*60*1000;$('#cd-m').value=5;}
       this.elapsedBefore=this.countdownTotal;
     },
 
@@ -157,7 +156,7 @@
             showToast(isWork?'☕ 休息5分钟':`🍅 继续${Math.round(workMs/60000)}分钟专注`);
           }else{fi.textContent='⏰';fm.textContent='倒计时结束！';showToast('⏰ 倒计时结束！');}
           fo.classList.add('show');
-          api('flash_window'); api('alert_sound');
+          api('restore_window'); api('alert_sound');
           setTimeout(()=>UI.timerPanel.classList.remove('finished'),3000);
           return;
         }
@@ -388,7 +387,7 @@
   //  MODULE: Player
   // ═══════════════════════════════════════════
   const Player = {
-    playlist:[],currentTrack:-1,isPlaying:false,
+    playlist:[],currentTrack:-1,isPlaying:false,currentUrl:null,_pendingPlay:false,_db:null,
     audio:$('#audio-player'),btnPlay:$('#btn-play'),btnPrev:$('#btn-prev'),btnNext:$('#btn-next'),btnImport:$('#btn-import'),
     songTitle:$('#song-title'),songArtist:$('#song-artist'),timeCur:$('#time-current'),timeTotal:$('#time-total'),
     progressBar:$('#progress-bar'),progressFill:$('#progress-fill'),
@@ -410,31 +409,102 @@
       this.audio.addEventListener('play',()=>{this.isPlaying=true;this.btnPlay.textContent='⏸';});
       this.audio.addEventListener('pause',()=>{this.isPlaying=false;this.btnPlay.textContent='▶';});
       this.audio.addEventListener('ended',()=>this.next());
-      this.audio.addEventListener('error',()=>{showToast('⚠️ 无法播放该文件');const b=this.currentTrack;this.next();if(this.playlist[b])URL.revokeObjectURL(this.playlist[b].url);this.playlist.splice(b,1);if(!this.playlist.length){this.currentTrack=-1;this.songTitle.textContent='未加载歌曲';}this._render();});
+      // 修复: 出错时移除坏轨道,不调用 next()(旧代码 next 会改 currentTrack 导致 splice 乱序)
+      this.audio.addEventListener('error',()=>{showToast('⚠️ 无法播放该文件');const b=this.currentTrack;if(b<0)return;if(this.currentUrl){URL.revokeObjectURL(this.currentUrl);this.currentUrl=null;}const trk=this.playlist[b];this.playlist.splice(b,1);if(trk&&trk.id)this._getDb().then(db=>{const tx=db.transaction('songs','readwrite');tx.objectStore('songs').delete(trk.id);}).catch(()=>{});if(!this.playlist.length){this.currentTrack=-1;this.songTitle.textContent='未加载歌曲';this.songArtist.textContent='';this._render();return;}this._pendingPlay=this.isPlaying;this._loadTrack(b>=this.playlist.length?0:b);this._render();});
+      // 事件委托: 一个监听器代替 N×2 个,500 首歌不再创建 1000 个 listener
+      this.plList.addEventListener('click',e=>{const del=e.target.closest('.pl-del');if(del){e.stopPropagation();this._deleteTrack(parseInt(del.dataset.idx));return;}const item=e.target.closest('.pl-item');if(item){const i=parseInt(item.dataset.idx);this._pendingPlay=this.isPlaying;this._loadTrack(i);}});
       setTimeout(()=>this._loadSaved(),100);
     },
 
-    playPause(){if(!this.playlist.length){showToast('请先导入歌曲');return;}if(this.currentTrack<0)this._loadTrack(0);if(this.isPlaying)this.audio.pause();else this.audio.play().catch(()=>showToast('⚠️ 播放失败'));},
-    next(){if(this.playlist.length){this._loadTrack((this.currentTrack+1)%this.playlist.length);if(this.isPlaying)this.audio.play().catch(()=>{});}},
-    prev(){if(this.playlist.length){this._loadTrack((this.currentTrack-1+this.playlist.length)%this.playlist.length);if(this.isPlaying)this.audio.play().catch(()=>{});}},
+    // DB 连接缓存 + v2→v3 迁移 (keyPath name→id autoIncrement)
+    _getDb(){return new Promise((resolve,reject)=>{if(this._db){resolve(this._db);return;}const req=indexedDB.open('stopwatch-audio',3);req.onupgradeneeded=e=>{const db=req.result;if(!db.objectStoreNames.contains('songs')){db.createObjectStore('songs',{keyPath:'id',autoIncrement:true});}else if(e.oldVersion<3){const oldStore=e.target.transaction.objectStore('songs');const allReq=oldStore.getAll();allReq.onsuccess=()=>{const old=allReq.result||[];db.deleteObjectStore('songs');const ns=db.createObjectStore('songs',{keyPath:'id',autoIncrement:true});old.forEach(item=>{if(item.blob)ns.put({name:item.name||'unknown',blob:item.blob});});};}};req.onsuccess=()=>{this._db=req.result;resolve(req.result);};req.onerror=()=>reject(req.error);});},
+    // 按需加载单首歌曲的 blob
+    _getBlob(id){return this._getDb().then(db=>new Promise((resolve,reject)=>{const tx=db.transaction('songs','readonly');const req=tx.objectStore('songs').get(id);req.onsuccess=()=>resolve(req.result?req.result.blob:null);req.onerror=()=>reject(req.error);}));},
 
-    importFiles(files){
-      for(const f of files){if(!f.type.startsWith('audio/'))continue;this.playlist.push({name:f.name.replace(/\.[^.]+$/,''),url:URL.createObjectURL(f),file:f});}
-      if(this.playlist.length&&this.currentTrack<0)this._loadTrack(0);this._save();this._render();showToast(`✅ 已导入 ${files.length} 首歌曲`);
+    playPause(){if(!this.playlist.length){showToast('请先导入歌曲');return;}if(this.currentTrack<0){this._pendingPlay=true;this._loadTrack(0);return;}if(this.isPlaying)this.audio.pause();else this.audio.play().catch(()=>showToast('⚠️ 播放失败'));},
+    next(){if(this.playlist.length){this._pendingPlay=this.isPlaying;this._loadTrack((this.currentTrack+1)%this.playlist.length);}},
+    prev(){if(this.playlist.length){this._pendingPlay=this.isPlaying;this._loadTrack((this.currentTrack-1+this.playlist.length)%this.playlist.length);}},
+
+    // 修复: 只存新文件,不再 clear()+重存全部。File 直接存入 IDB(已是 Blob 子类),不创建冗余副本
+    async importFiles(files){
+      const audioFiles=[];
+      for(const f of files){if(f.type.startsWith('audio/'))audioFiles.push({name:f.name.replace(/\.[^.]+$/,''),file:f});}
+      if(!audioFiles.length){showToast('未找到音频文件');return;}
+      const startIdx=this.playlist.length;
+      // 立即加入播放列表(带 file 引用),UI 即时响应
+      for(const af of audioFiles){this.playlist.push({id:0,name:af.name,file:af.file});}
+      if(this.playlist.length&&this.currentTrack<0)this._loadTrack(0);
+      this._render();
+      showToast(`✅ 已导入 ${audioFiles.length} 首歌曲`);
+      // 后台存入 IDB,完成后用真实 id 替换临时值,释放非当前轨道的 file 引用
+      try{
+        const db=await this._getDb();
+        const tx=db.transaction('songs','readwrite');
+        const store=tx.objectStore('songs');
+        for(let i=0;i<audioFiles.length;i++){
+          const af=audioFiles[i],plIdx=startIdx+i;
+          const req=store.put({name:af.name,blob:af.file});
+          req.onsuccess=()=>{if(this.playlist[plIdx]){this.playlist[plIdx].id=req.result;if(plIdx!==this.currentTrack)delete this.playlist[plIdx].file;}};
+        }
+      }catch(e){console.error('Player save:',e);}
     },
 
-    _loadTrack(idx){if(idx<0||idx>=this.playlist.length)return;this.currentTrack=idx;const t=this.playlist[idx];this.audio.src=t.url;this.songTitle.textContent=t.name;this.songArtist.textContent='';this.audio.load();this._render();},
+    // 修复: 按需加载 blob。有 file 引用直接用,否则从 IDB 单条读取。含竞态保护
+    async _loadTrack(idx){
+      if(idx<0||idx>=this.playlist.length)return;
+      this.currentTrack=idx;
+      const t=this.playlist[idx];
+      this.songTitle.textContent=t.name;this.songArtist.textContent='';this._render();
+      // 释放上一首的 object URL
+      if(this.currentUrl){URL.revokeObjectURL(this.currentUrl);this.currentUrl=null;}
+      const shouldPlay=this._pendingPlay;this._pendingPlay=false;
+      // 有 file 引用(刚导入未释放) → 同步设置 src
+      if(t.file){this.currentUrl=URL.createObjectURL(t.file);this.audio.src=this.currentUrl;this.audio.load();if(shouldPlay)this.audio.play().catch(()=>{});return;}
+      // 从 IDB 按需读取单首 blob
+      try{
+        const blob=await this._getBlob(t.id);
+        if(this.currentTrack!==idx)return; // 竞态: 用户已切到其他轨道
+        if(!blob){showToast('⚠️ 无法加载歌曲');return;}
+        this.currentUrl=URL.createObjectURL(blob);
+        this.audio.src=this.currentUrl;this.audio.load();
+        if(shouldPlay)this.audio.play().catch(()=>{});
+      }catch(e){showToast('⚠️ 加载失败');}
+    },
     _setVol(v){this.audio.volume=v;this.volSlider.value=Math.round(v*100);this.volNum.textContent=Math.round(v*100);this.volIcon.textContent=v===0?'🔇':v<0.5?'🔉':'🔊';},
 
+    // 修复: 事件委托在 init 中注册,_render 只管 DOM。escapeHtml 防 XSS
     _render(){
       this.plCount.textContent=this.playlist.length;
       if(!this.playlist.length){this.plList.innerHTML='<div id="pl-empty">暂无歌曲，点击 📁 导入</div>';return;}
-      this.plList.innerHTML=this.playlist.map((t,i)=>`<div class="pl-item${i===this.currentTrack?' active':''}" data-idx="${i}"><span class="pl-idx">${String(i+1).padStart(2,'0')}</span><span class="pl-name">${t.name}</span><span class="pl-del" data-idx="${i}">✕</span></div>`).join('');
-      this.plList.querySelectorAll('.pl-item').forEach(el=>el.addEventListener('click',e=>{if(e.target.classList.contains('pl-del'))return;const i=parseInt(el.dataset.idx);this._loadTrack(i);if(this.isPlaying)this.audio.play().catch(()=>{});}));
-      this.plList.querySelectorAll('.pl-del').forEach(el=>el.addEventListener('click',e=>{e.stopPropagation();const i=parseInt(el.dataset.idx);if(i===this.currentTrack){this.audio.pause();this.audio.src='';this.currentTrack=-1;}if(i<this.currentTrack)this.currentTrack--;URL.revokeObjectURL(this.playlist[i].url);this.playlist.splice(i,1);if(!this.playlist.length){this.currentTrack=-1;this.songTitle.textContent='未加载歌曲';this.songArtist.textContent='';}this._save();this._render();}));
+      this.plList.innerHTML=this.playlist.map((t,i)=>`<div class="pl-item${i===this.currentTrack?' active':''}" data-idx="${i}"><span class="pl-idx">${String(i+1).padStart(2,'0')}</span><span class="pl-name">${escapeHtml(t.name)}</span><span class="pl-del" data-idx="${i}">✕</span></div>`).join('');
     },
-    _save(){try{const db=indexedDB.open('stopwatch-audio',2);db.onupgradeneeded=()=>{if(!db.result.objectStoreNames.contains('songs'))db.result.createObjectStore('songs',{keyPath:'name'});};db.onsuccess=()=>{const tx=db.result.transaction('songs','readwrite');tx.objectStore('songs').clear();for(const t of this.playlist){if(t.file)tx.objectStore('songs').put({name:t.name,blob:new Blob([t.file],{type:t.file.type})});}};}catch(e){}},
-    _loadSaved(){try{const db=indexedDB.open('stopwatch-audio',2);db.onupgradeneeded=()=>{if(!db.result.objectStoreNames.contains('songs'))db.result.createObjectStore('songs',{keyPath:'name'});};db.onsuccess=()=>{try{const tx=db.result.transaction('songs','readonly');tx.objectStore('songs').getAll().onsuccess=e=>{if(!e.target.result.length)return;this.playlist=e.target.result.map(d=>({name:d.name,url:URL.createObjectURL(d.blob),file:d.blob}));this._render();this._loadTrack(0);showToast(`🎵 已恢复 ${this.playlist.length} 首歌曲`);};}catch(ex){}};}catch(e){}},
+
+    // 修复: 删除单条 IDB 记录,不再 clear()+重存全部
+    async _deleteTrack(i){
+      if(i<0||i>=this.playlist.length)return;
+      const track=this.playlist[i];
+      if(i===this.currentTrack){this.audio.pause();this.audio.src='';this.currentTrack=-1;if(this.currentUrl){URL.revokeObjectURL(this.currentUrl);this.currentUrl=null;}}
+      if(i<this.currentTrack)this.currentTrack--;
+      this.playlist.splice(i,1);
+      if(!this.playlist.length){this.currentTrack=-1;this.songTitle.textContent='未加载歌曲';this.songArtist.textContent='';}
+      if(track&&track.id){try{const db=await this._getDb();const tx=db.transaction('songs','readwrite');tx.objectStore('songs').delete(track.id);}catch(e){}}
+      this._render();
+    },
+
+    // 修复: 用游标遍历,只读 {id,name} 元数据。不调 getAll() 避免一次性加载全部 blob
+    async _loadSaved(){
+      try{
+        const db=await this._getDb();
+        const tx=db.transaction('songs','readonly');
+        const req=tx.objectStore('songs').openCursor();
+        const items=[];
+        req.onsuccess=()=>{
+          const cursor=req.result;
+          if(cursor){items.push({id:cursor.primaryKey,name:cursor.value.name});cursor.continue();}
+          else{if(items.length){this.playlist=items;this._render();this._loadTrack(0);showToast(`🎵 已恢复 ${this.playlist.length} 首歌曲`);}}
+        };
+      }catch(e){console.error('Player loadSaved:',e);}
+    },
   };
 
   // ═══════════════════════════════════════════
@@ -915,7 +985,7 @@
   $('#cd-h').addEventListener('change',()=>{if(!Timer.running)Timer.setCountdown();});
   $('#cd-m').addEventListener('change',()=>{if(!Timer.running)Timer.setCountdown();});
   $('#cd-s').addEventListener('change',()=>{if(!Timer.running)Timer.setCountdown();});
-  $('#countdown-confirm').addEventListener('click',()=>{Timer.setCountdown();cdSetup.classList.remove('visible');UI.timerPanel.classList.add('countdown-mode');UI.updateDisplay(Timer.elapsedBefore);UI.timerPanel.classList.remove('running','countdown-active','finished');UI.btnStart.textContent='▶ 开始';UI.btnStart.classList.remove('running');UI.btnLap.disabled=true;showToast(`⏳ 倒计时 ${$('#cd-h').value||0}:${String($('#cd-m').value||5).padStart(2,'0')}:${String($('#cd-s').value||0).padStart(2,'0')}`);Timer.start();});
+  $('#countdown-confirm').addEventListener('click',()=>{Timer.setCountdown();if(Timer.countdownTotal<=0){showToast('⏳ 请设置倒计时时间');return;}cdSetup.classList.remove('visible');UI.timerPanel.classList.add('countdown-mode');UI.updateDisplay(Timer.elapsedBefore);UI.timerPanel.classList.remove('running','countdown-active','finished');UI.btnStart.textContent='▶ 开始';UI.btnStart.classList.remove('running');UI.btnLap.disabled=true;showToast(`⏳ 倒计时 ${$('#cd-h').value||0}:${String($('#cd-m').value||0).padStart(2,'0')}:${String($('#cd-s').value||0).padStart(2,'0')}`);Timer.start();});
   $('#countdown-cancel').addEventListener('click',()=>{cdSetup.classList.remove('visible');UI.timerPanel.classList.remove('countdown-mode');Timer.mode='stopwatch';Timer.elapsedBefore=0;Timer.countdownTotal=0;UI.modeTabs.forEach(t=>t.classList.remove('active'));const sw=document.querySelector('[data-mode="stopwatch"]');if(sw)sw.classList.add('active');UI.updateDisplay(0);});
   cdSetup.addEventListener('click',e=>{if(e.target===cdSetup)$('#countdown-cancel').click();});
 
@@ -943,8 +1013,8 @@
 
   // Fullscreen
   let isFullscreen=false;
-  $('#btn-fullscreen').addEventListener('click',async()=>{try{await api('toggle_fullscreen');isFullscreen=!isFullscreen;$('#btn-fullscreen').textContent=isFullscreen?'✖':'⛶';}catch(e){if(!document.fullscreenElement)document.documentElement.requestFullscreen().catch(()=>showToast('全屏不可用'));else document.exitFullscreen();}});
-  document.addEventListener('fullscreenchange',()=>{$('#btn-fullscreen').textContent=document.fullscreenElement?'✖':'⛶';});
+  $('#btn-fullscreen').addEventListener('click',async()=>{try{await api('toggle_fullscreen');isFullscreen=!isFullscreen;$('#btn-fullscreen').textContent=isFullscreen?'✖':'⛶';document.body.classList.toggle('fullscreen',isFullscreen);}catch(e){if(!document.fullscreenElement){document.documentElement.requestFullscreen().catch(()=>showToast('全屏不可用'));}else{document.exitFullscreen();}}});
+  document.addEventListener('fullscreenchange',()=>{const fs=!!document.fullscreenElement;$('#btn-fullscreen').textContent=fs?'✖':'⛶';document.body.classList.toggle('fullscreen',fs);});
 
   // Zen
   $('#btn-zen').addEventListener('click',()=>Zen.open());
