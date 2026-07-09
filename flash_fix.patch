@@ -1,0 +1,48 @@
+--- a/src/stopwatch.py
++++ b/src/stopwatch.py
+--- 
++++ 
+@@ -1,15 +1,22 @@
+     def flash_window(self):
+         try:
+             import ctypes
++            from ctypes import wintypes
+             user32 = ctypes.windll.user32
++            # 64 位安全：显式声明返回类型，否则 HWND 默认按 c_int(32位) 返回会被截断
++            user32.FindWindowW.restype = wintypes.HWND
++            user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+             hwnd = user32.FindWindowW(None, APP_TITLE)
+             if not hwnd: return
++            # 关键修复：窗口最小化时用 SW_SHOWNOACTIVATE(4) 恢复，不抢前台。
++            # 原代码用 SW_RESTORE(9) 会把窗口激活到前台，导致随后的
++            # FlashWindowEx(FLASHW_TIMERNOFG) 因"窗口已在前台"而不产生任务栏橙色闪动。
+             if user32.IsIconic(hwnd):
+-                user32.ShowWindow(hwnd, 9)
++                user32.ShowWindow(hwnd, 4)  # SW_SHOWNOACTIVATE
+             class FLASHWINFO(ctypes.Structure):
+                 _fields_ = [
+                     ("cbSize",    ctypes.c_uint),
+-                    ("hwnd",      ctypes.c_void_p),
++                    ("hwnd",      wintypes.HWND),
+                     ("dwFlags",   ctypes.c_uint),
+                     ("uCount",    ctypes.c_uint),
+                     ("dwTimeout", ctypes.c_uint),
+@@ -17,8 +24,10 @@
+             fi = FLASHWINFO()
+             fi.cbSize    = ctypes.sizeof(FLASHWINFO)
+             fi.hwnd      = hwnd
+-            fi.dwFlags   = 0x3 | 0xC  # FLASHW_ALL(3) | FLASHW_TIMERNOFG(C) = flash tray+caption until focus
++            fi.dwFlags   = 0x3 | 0xC  # FLASHW_ALL(3) | FLASHW_TIMERNOFG(C) = 闪到窗口来到前台
+             fi.uCount    = 0
+             fi.dwTimeout = 0
++            user32.FlashWindowEx.argtypes = [ctypes.c_void_p]
++            user32.FlashWindowEx.restype  = wintypes.BOOL
+             user32.FlashWindowEx(ctypes.byref(fi))
+         except Exception as e: print(f"[flash] {e}")
+--- a/src/stopwatch.js
++++ b/src/stopwatch.js
+--- 
++++ 
+@@ -1 +1 @@
+-          api('flash_window'); post('/api/test_flash'); api('alert_sound');
++          api('flash_window'); api('alert_sound');
