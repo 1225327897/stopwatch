@@ -1,19 +1,129 @@
-# PyInstaller 构建产物
+# ============================================================
+# Stopwatch - .gitignore
+# 技术栈：Python + pywebview + Edge WebView2 + SQLite
+# 适用：Windows 桌面应用，PyInstaller 打包
+# ============================================================
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+.eggs/
+sdist/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+MANIFEST
+
+# 虚拟环境
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.python-version
+
+# 环境变量 / 密钥
+.env
+.env.local
+.env.*.local
+*.env
+secrets.json
+credentials.json
+*.pem
+*.key
+
+# ===== pywebview / Edge WebView2 =====
+# 运行时生成的缓存与用户数据目录
+*webview2*/
+WebView2Cache/
+WebView2UserData/
+*.webview2-cache
+
+# ===== SQLite =====
+# 数据库文件（运行时生成，不入库）
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite-shm
+*.sqlite-wal
+# 但保留 schema / migration 脚本
+!migrations/*.sql
+!schema/*.sql
+!*.schema.sql
+
+# ===== PyInstaller / 打包产物 =====
 build/
 dist/
 *.exe
+*.manifest
+# 保留 .spec（打包配置，需入库）
+!*.spec
 
-# Python 缓存
-__pycache__/
-*.pyc
+# ===== 依赖锁定（按需取消注释） =====
+# pip freeze 生成的锁文件通常入库；若使用 poetry/pdm 请保留各自锁文件
+# requirements.lock.txt
 
-# 用户数据（含登录态，不纳入版本控制）
-data/*.db
-
-# 临时诊断脚本
-diag_*.py
-live_test.py
-
-# IDE
+# ===== IDE / 编辑器 =====
 .vscode/
 .idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+*.sublime-project
+*.sublime-workspace
+
+# ===== 测试 / 覆盖率 =====
+.pytest_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.cover
+.hypothesis/
+
+# ===== 类型检查 =====
+.mypy_cache/
+.pyre/
+.pytype/
+.ruff_cache/
+
+# ===== 日志 =====
+logs/
+*.log
+
+# ===== 操作系统 =====
+.DS_Store
+Thumbs.db
+Thumbs.db:encryptable
+desktop.ini
+ehthumbs.db
+$RECYCLE.BIN/
+*.lnk
+
+# ===== 应用运行时数据 =====
+cache/
+user_data/
+userdata/
+*.bak
+*.tmp
+*.temp
+
+# ===== 构建工具 =====
+Output/
+*.iss.bak
+
+# ===== 临时诊断脚本 =====
+diag_*.py
+live_test.py
