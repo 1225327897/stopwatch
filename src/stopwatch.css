@@ -1455,122 +1455,123 @@ body {
 }
 
 /* ═══════════════════════════════════════════
-   Fullscreen Responsive Scaling
-   — body.fullscreen toggled by JS when entering/leaving fullscreen.
-   — Uses clamp() + vmin so all UI elements scale proportionally
-     with viewport size, filling the screen instead of leaving empty space.
+   Responsive Scaling — fills the screen on large viewports
+   Uses clamp() + vmin so UI elements scale proportionally
+   with window size, eliminating empty space when maximised or
+   fullscreen.  clamp() minima are the original design sizes,
+   so small windows are completely unaffected.
    ═══════════════════════════════════════════ */
-body.fullscreen {
+body {
   --sidebar-width: clamp(320px, 28vmin, 440px);
 }
 
 /* Top bar */
-body.fullscreen #top-bar {
+#top-bar {
   height: clamp(52px, 6vmin, 68px);
 }
-body.fullscreen .top-btn {
+.top-btn {
   width: clamp(42px, 5vmin, 56px);
   height: clamp(42px, 5vmin, 56px);
   font-size: clamp(1.15rem, 1.4vmin, 1.5rem);
 }
 
 /* Main area — more breathing room */
-body.fullscreen #main {
+#main {
   padding: clamp(3.5rem, 5vmin, 6rem) clamp(2rem, 4vmin, 5rem) clamp(1.5rem, 2.5vmin, 3rem);
   gap: clamp(1.2rem, 2vmin, 2.5rem);
 }
 
 /* Banner */
-body.fullscreen #banner-wrap {
+#banner-wrap {
   padding: clamp(0.55rem, 0.8vmin, 1rem) clamp(1.6rem, 2.5vmin, 3rem);
   min-width: clamp(320px, 42vmin, 560px);
 }
-body.fullscreen #banner-text {
+#banner-text {
   font-size: clamp(0.95rem, 1.2vmin, 1.3rem);
 }
 
 /* Mode tabs */
-body.fullscreen #mode-tabs {
+#mode-tabs {
   gap: clamp(0.4rem, 0.6vmin, 0.8rem);
   margin-bottom: clamp(0.8rem, 1.2vmin, 1.5rem);
 }
-body.fullscreen .mode-tab {
+.mode-tab {
   padding: clamp(0.45rem, 0.7vmin, 0.8rem) clamp(1.3rem, 2vmin, 2.5rem);
   font-size: clamp(0.85rem, 1.1vmin, 1.2rem);
 }
 
 /* Timer panel — the star of the show */
-body.fullscreen #timer-panel {
+#timer-panel {
   padding: clamp(3rem, 4vmin, 5rem) clamp(5rem, 7vmin, 9rem);
   min-width: clamp(560px, 72vmin, 1100px);
 }
 
 /* Digit boxes — scale up dramatically */
-body.fullscreen #timer-display {
+#timer-display {
   gap: clamp(0.3rem, 0.5vmin, 0.6rem);
 }
-body.fullscreen .digit-group {
+.digit-group {
   gap: clamp(0.15rem, 0.3vmin, 0.4rem);
 }
-body.fullscreen .digit-box {
+.digit-box {
   width: clamp(110px, 17vmin, 220px);
   height: clamp(155px, 24vmin, 310px);
   font-size: clamp(6.5rem, 14vmin, 14rem);
 }
-body.fullscreen .separator {
+.separator {
   font-size: clamp(5rem, 11vmin, 11rem);
 }
 
 /* Buttons */
-body.fullscreen #btn-row {
+#btn-row {
   gap: clamp(1rem, 1.5vmin, 1.8rem);
   margin-top: clamp(1.5rem, 2.5vmin, 3rem) !important;
 }
-body.fullscreen .btn {
+.btn {
   padding: clamp(1rem, 1.5vmin, 1.6rem) clamp(2.4rem, 3.5vmin, 4rem);
   font-size: clamp(1.05rem, 1.4vmin, 1.5rem);
 }
-body.fullscreen .btn-start {
+.btn-start {
   font-size: clamp(1.1rem, 1.5vmin, 1.6rem);
   min-width: clamp(120px, 14vmin, 180px);
 }
 
 /* Quote box */
-body.fullscreen #quote-box {
+#quote-box {
   max-width: clamp(600px, 80vmin, 1200px);
   padding: clamp(0.55rem, 0.8vmin, 1rem) clamp(1rem, 1.5vmin, 1.8rem);
 }
-body.fullscreen #quote-text {
+#quote-text {
   font-size: clamp(0.95rem, 1.2vmin, 1.3rem);
 }
 
 /* Player bar */
-body.fullscreen #player-bar {
+#player-bar {
   max-width: clamp(600px, 80vmin, 1200px);
   padding: clamp(0.5rem, 0.7vmin, 0.8rem) clamp(0.8rem, 1.2vmin, 1.5rem) clamp(0.5rem, 0.7vmin, 0.8rem) clamp(1.5rem, 2vmin, 2.5rem);
 }
-body.fullscreen .p-btn {
+.p-btn {
   width: clamp(38px, 4.5vmin, 52px);
   height: clamp(38px, 4.5vmin, 52px);
   font-size: clamp(1rem, 1.3vmin, 1.4rem);
 }
-body.fullscreen .p-play {
+.p-play {
   width: clamp(44px, 5.5vmin, 60px);
   height: clamp(44px, 5.5vmin, 60px);
   font-size: clamp(1.1rem, 1.4vmin, 1.5rem);
 }
-body.fullscreen #song-title { font-size: clamp(0.85rem, 1vmin, 1.05rem); }
-body.fullscreen #song-artist { font-size: clamp(0.72rem, 0.85vmin, 0.9rem); }
+#song-title { font-size: clamp(0.85rem, 1vmin, 1.05rem); }
+#song-artist { font-size: clamp(0.72rem, 0.85vmin, 0.9rem); }
 
 /* Hint */
-body.fullscreen #hint {
+#hint {
   font-size: clamp(0.85rem, 1.1vmin, 1.15rem);
   padding: clamp(0.35rem, 0.5vmin, 0.6rem) clamp(0.6rem, 0.9vmin, 1rem);
 }
 
 /* Playlist dropdown */
-body.fullscreen #playlist-dropdown {
+#playlist-dropdown {
   width: clamp(300px, 26vmin, 420px);
   left: clamp(-300px, -26vmin, -420px);
 }
-body.fullscreen #playlist-dropdown.open { left: 0; }
+#playlist-dropdown.open { left: 0; }
