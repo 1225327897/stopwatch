@@ -16,6 +16,9 @@ set "ROOT=%ROOT:~0,-1%"
 REM ===== 配置区（按实际环境修改）=====
 REM 默认 Python 解释器路径（留空则自动查找）
 set "PYTHON="
+REM GitHub 代理（格式: http://127.0.0.1:7892）。若网络直连 GitHub 则留空。
+set "HTTP_PROXY=http://127.0.0.1:7892"
+set "HTTPS_PROXY=http://127.0.0.1:7892"
 REM GitHub 仓库地址
 set "REPO=https://github.com/1225327897/stopwatch.git"
 REM ===================================
@@ -58,10 +61,34 @@ if not exist "%ROOT%\.git" (
     echo   未检测到 Git 仓库，初始化并拉取远程代码...
     git init
     git remote add origin "%REPO%"
+) else (
+    echo   已检测到 Git 仓库，直接 pull...
+)
+
+REM 测试 GitHub 连通性；若失败且配置了代理，则启用代理重试
+git ls-remote origin main >nul 2>&1
+if errorlevel 1 (
+    if defined HTTP_PROXY (
+        echo   GitHub 直连失败，启用代理: %HTTP_PROXY%
+        git config --local http.proxy "%HTTP_PROXY%"
+        git config --local https.proxy "%HTTPS_PROXY%"
+        set "NO_PROXY="
+        set "no_proxy="
+    ) else (
+        echo   [错误] 无法连接 GitHub，请检查网络或在脚本顶部设置代理
+        goto :fail
+    )
+)
+
+if not exist "%ROOT%\.git\refs\heads\main" (
     git fetch origin
-    git reset --hard origin/main
     if errorlevel 1 (
         echo   [错误] 拉取远程代码失败，请检查网络或仓库地址
+        goto :fail
+    )
+    git reset --hard origin/main
+    if errorlevel 1 (
+        echo   [错误] 重置到远程 main 失败
         goto :fail
     )
 ) else (
