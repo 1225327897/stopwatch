@@ -1,28 +1,54 @@
-﻿@echo off
+@echo off
 chcp 65001 >nul 2>&1
 setlocal enabledelayedexpansion
 
 REM ============================================================
 REM   须臾 - 一键部署脚本
 REM   功能: Git Pull -> PyInstaller 编译 -> 移动 exe -> 清理
-REM   用法: 双击运行即可
+REM   用法: 直接双击运行，不需要管理员权限
 REM ============================================================
 
+REM 先切换到脚本所在目录（防双击/管理员运行导致 CWD 错误）
+cd /d "%~dp0"
+set "ROOT=%~dp0"
+set "ROOT=%ROOT:~0,-1%"
+
 REM ===== 配置区（按实际环境修改）=====
-REM Python 解释器路径（需要已安装 PyInstaller + pywebview）
-set "PYTHON=D:\hermes\hermes-agent\venv\Scripts\python.exe"
+REM 默认 Python 解释器路径（留空则自动查找）
+set "PYTHON="
 REM GitHub 仓库地址
 set "REPO=https://github.com/1225327897/stopwatch.git"
 REM ===================================
-
-set "ROOT=%~dp0"
-set "ROOT=%ROOT:~0,-1%"
 
 echo.
 echo   ============================================
 echo     须臾 stopwatch - 一键部署
 echo   ============================================
 echo.
+
+REM ---- 自动查找 Python ----
+echo   [0/4] 查找 Python 环境...
+if defined PYTHON goto :found_py
+
+set "PYTHON=C:\Users\%USERNAME%\.workbuddy\binaries\python\versions\3.13.12\python.exe"
+if exist "%PYTHON%" goto :found_py
+
+set "PYTHON=D:\Python\Python3.11\python.exe"
+if exist "%PYTHON%" goto :found_py
+
+set "PYTHON=D:\hermes\hermes-agent\venv\Scripts\python.exe"
+if exist "%PYTHON%" goto :found_py
+
+for /f "delims=" %%i in ('where python 2^>nul') do (
+    set "PYTHON=%%i"
+    goto :found_py
+)
+
+echo   [错误] 未找到 Python，请安装 Python 或在脚本顶部设置 PYTHON 变量
+goto :fail
+
+:found_py
+echo   使用 Python: %PYTHON%
 
 REM ---- Step 1: Git 同步 ----
 echo   [1/4] 同步 GitHub 最新代码...
@@ -50,11 +76,10 @@ echo   [OK] 代码同步完成
 echo.
 
 REM ---- Step 2: 检查 Python 环境 ----
-echo   [2/4] 检查 Python 环境...
+echo   [2/4] 检查 Python 依赖...
 
 if not exist "%PYTHON%" (
     echo   [错误] 未找到 Python: %PYTHON%
-    echo   请修改脚本顶部的 PYTHON 路径
     goto :fail
 )
 
