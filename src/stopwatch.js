@@ -387,7 +387,7 @@
   //  MODULE: Player
   // ═══════════════════════════════════════════
   const Player = {
-    playlist:[],currentTrack:-1,isPlaying:false,currentUrl:null,_pendingPlay:false,_db:null,
+    playlist:[],currentTrack:-1,isPlaying:false,currentUrl:null,_pendingPlay:false,_db:null,_switching:false,
     audio:$('#audio-player'),btnPlay:$('#btn-play'),btnPrev:$('#btn-prev'),btnNext:$('#btn-next'),btnImport:$('#btn-import'),
     songTitle:$('#song-title'),songArtist:$('#song-artist'),timeCur:$('#time-current'),timeTotal:$('#time-total'),
     progressBar:$('#progress-bar'),progressFill:$('#progress-fill'),
@@ -410,7 +410,7 @@
       this.audio.addEventListener('pause',()=>{this.isPlaying=false;this.btnPlay.textContent='▶';});
       this.audio.addEventListener('ended',()=>this.next());
       // 修复: 出错时移除坏轨道,不调用 next()(旧代码 next 会改 currentTrack 导致 splice 乱序)
-      this.audio.addEventListener('error',()=>{showToast('⚠️ 无法播放该文件');const b=this.currentTrack;if(b<0)return;if(this.currentUrl){URL.revokeObjectURL(this.currentUrl);this.currentUrl=null;}const trk=this.playlist[b];this.playlist.splice(b,1);if(trk&&trk.id)this._getDb().then(db=>{const tx=db.transaction('songs','readwrite');tx.objectStore('songs').delete(trk.id);}).catch(()=>{});if(!this.playlist.length){this.currentTrack=-1;this.songTitle.textContent='未加载歌曲';this.songArtist.textContent='';this._render();return;}this._pendingPlay=this.isPlaying;this._loadTrack(b>=this.playlist.length?0:b);this._render();});
+      this.audio.addEventListener('error',()=>{if(this._switching)return;showToast('⚠️ 无法播放该文件');const b=this.currentTrack;if(b<0)return;if(this.currentUrl){URL.revokeObjectURL(this.currentUrl);this.currentUrl=null;}const trk=this.playlist[b];this.playlist.splice(b,1);if(trk&&trk.id)this._getDb().then(db=>{const tx=db.transaction('songs','readwrite');tx.objectStore('songs').delete(trk.id);}).catch(()=>{});if(!this.playlist.length){this.currentTrack=-1;this.songTitle.textContent='未加载歌曲';this.songArtist.textContent='';this._render();return;}this._pendingPlay=this.isPlaying;this._loadTrack(b>=this.playlist.length?0:b);this._render();});
       // 事件委托: 一个监听器代替 N×2 个,500 首歌不再创建 1000 个 listener
       this.plList.addEventListener('click',e=>{const del=e.target.closest('.pl-del');if(del){e.stopPropagation();this._deleteTrack(parseInt(del.dataset.idx));return;}const item=e.target.closest('.pl-item');if(item){const i=parseInt(item.dataset.idx);this._pendingPlay=this.isPlaying;this._loadTrack(i);}});
       setTimeout(()=>this._loadSaved(),100);
@@ -457,19 +457,21 @@
       this.currentTrack=idx;
       const t=this.playlist[idx];
       this.songTitle.textContent=t.name;this.songArtist.textContent='';this._render();
-      // 清空 src 帮助 GC, 释放旧 object URL
-      this.audio.src='';
+      this._switching=true;
+      // 切歌时暂停避免中途触发 ended, 清空 src 释放旧资源
+      this.audio.pause();
       if(this.currentUrl){URL.revokeObjectURL(this.currentUrl);this.currentUrl=null;}
+      this.audio.removeAttribute('src');
       const shouldPlay=this._pendingPlay;this._pendingPlay=false;
-      // 从 IDB 按需读取单首 blob
       try{
         const blob=await this._getBlob(t.id);
-        if(this.currentTrack!==idx)return; // 竞态: 用户已切到其他轨道
-        if(!blob){showToast('⚠️ 无法加载歌曲');return;}
+        if(this.currentTrack!==idx){this._switching=false;return;}
+        if(!blob){this._switching=false;showToast('⚠️ 无法加载歌曲');return;}
         this.currentUrl=URL.createObjectURL(blob);
         this.audio.src=this.currentUrl;this.audio.load();
+        this._switching=false;
         if(shouldPlay)this.audio.play().catch(()=>{});
-      }catch(e){showToast('⚠️ 加载失败');}
+      }catch(e){this._switching=false;showToast('⚠️ 加载失败');}
     },
     _setVol(v){this.audio.volume=v;this.volSlider.value=Math.round(v*100);this.volNum.textContent=Math.round(v*100);this.volIcon.textContent=v===0?'🔇':v<0.5?'🔉':'🔊';},
 
@@ -1031,7 +1033,7 @@
   $('#finish-overlay').addEventListener('click',e=>{if(e.target===$('#finish-overlay'))$('#finish-overlay').classList.remove('show');});
 
   // Keyboard
-  document.addEventListener('keydown',e=>{if(e.target.tagName==='INPUT')return;switch(e.key.toLowerCase()){case' ':e.preventDefault();Timer.running?Timer.stop():Timer.start();break;case'l':if(Timer.running)Timer.lap();break;case'r':Timer.reset();break;case's':Sidebar.toggle();break;case'p':e.preventDefault();Pomodoro.overlay.classList.toggle('show');break;case'arrowleft':e.preventDefault();Player.prev();break;case'arrowright':e.preventDefault();Player.next();break;}});
+  document.addEventListener('keydown',e=>{if(e.target.tagName==='INPUT')return;switch(e.key.toLowerCase()){case' ':e.preventDefault();Timer.running?Timer.stop():Timer.start();break;case'l':if(Timer.running)Timer.lap();break;case'r':Timer.reset();break;case's':Sidebar.toggle();break;case'p':e.preventDefault();Player.plDropdown.classList.toggle('open');break;case'arrowleft':e.preventDefault();Player.prev();break;case'arrowright':e.preventDefault();Player.next();break;}});
 
   // Hint bar
   document.querySelectorAll('.hint-action').forEach(el=>el.addEventListener('click',()=>{const a=el.dataset.action;if(a==='toggle')Timer.running?Timer.stop():Timer.start();else if(a==='lap'&&Timer.running)Timer.lap();else if(a==='reset')Timer.reset();else if(a==='sidebar')Sidebar.toggle();else if(a==='playlist')Player.plDropdown.classList.toggle('open');else if(a==='prev')Player.prev();else if(a==='next')Player.next();}));
