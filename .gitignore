@@ -127,3 +127,6 @@ Output/
 # ===== 临时诊断脚本 =====
 diag_*.py
 live_test.py
+
+# ===== 本地部署脚本（不上传） =====
+push.bat
