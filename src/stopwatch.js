@@ -425,41 +425,42 @@
     next(){if(this.playlist.length){this._pendingPlay=this.isPlaying;this._loadTrack((this.currentTrack+1)%this.playlist.length);}},
     prev(){if(this.playlist.length){this._pendingPlay=this.isPlaying;this._loadTrack((this.currentTrack-1+this.playlist.length)%this.playlist.length);}},
 
-    // 修复: 只存新文件,不再 clear()+重存全部。File 直接存入 IDB(已是 Blob 子类),不创建冗余副本
+    // 分批写入: 每10首一批写入 IDB, playlist 只存 {id,name} 元数据, 不持有 File 引用
     async importFiles(files){
-      const audioFiles=[];
-      for(const f of files){if(f.type.startsWith('audio/'))audioFiles.push({name:f.name.replace(/\.[^.]+$/,''),file:f});}
-      if(!audioFiles.length){showToast('未找到音频文件');return;}
-      const startIdx=this.playlist.length;
-      // 立即加入播放列表(带 file 引用),UI 即时响应
-      for(const af of audioFiles){this.playlist.push({id:0,name:af.name,file:af.file});}
-      if(this.playlist.length&&this.currentTrack<0)this._loadTrack(0);
-      this._render();
-      showToast(`✅ 已导入 ${audioFiles.length} 首歌曲`);
-      // 后台存入 IDB,完成后用真实 id 替换临时值,释放非当前轨道的 file 引用
+      const filtered=[];
+      for(const f of files){if(f.type.startsWith('audio/'))filtered.push({name:f.name.replace(/\.[^.]+$/,''),file:f});}
+      if(!filtered.length){showToast('未找到音频文件');return;}
+      let added=0;
       try{
         const db=await this._getDb();
-        const tx=db.transaction('songs','readwrite');
-        const store=tx.objectStore('songs');
-        for(let i=0;i<audioFiles.length;i++){
-          const af=audioFiles[i],plIdx=startIdx+i;
-          const req=store.put({name:af.name,blob:af.file});
-          req.onsuccess=()=>{if(this.playlist[plIdx]){this.playlist[plIdx].id=req.result;if(plIdx!==this.currentTrack)delete this.playlist[plIdx].file;}};
+        const BATCH=10;
+        for(let i=0;i<filtered.length;i+=BATCH){
+          const batch=filtered.slice(i,i+BATCH);
+          const tx=db.transaction('songs','readwrite');
+          const store=tx.objectStore('songs');
+          const ids=await Promise.all(batch.map(af=>new Promise((resolve,reject)=>{
+            const req=store.put({name:af.name,blob:af.file});
+            req.onsuccess=()=>resolve(req.result);
+            req.onerror=()=>reject(req.error);
+          })));
+          for(let j=0;j<batch.length;j++){this.playlist.push({id:ids[j],name:batch[j].name});added++;}
+          await new Promise(r=>tx.oncomplete=r);
         }
-      }catch(e){console.error('Player save:',e);}
+      }catch(e){console.error('Player import:',e);showToast('❌ 导入失败');return;}
+      if(this.playlist.length&&this.currentTrack<0)this._loadTrack(0);
+      this._render();
+      showToast(`✅ 已导入 ${added} 首歌曲`);
     },
 
-    // 修复: 按需加载 blob。有 file 引用直接用,否则从 IDB 单条读取。含竞态保护
     async _loadTrack(idx){
       if(idx<0||idx>=this.playlist.length)return;
       this.currentTrack=idx;
       const t=this.playlist[idx];
       this.songTitle.textContent=t.name;this.songArtist.textContent='';this._render();
-      // 释放上一首的 object URL
+      // 清空 src 帮助 GC, 释放旧 object URL
+      this.audio.src='';
       if(this.currentUrl){URL.revokeObjectURL(this.currentUrl);this.currentUrl=null;}
       const shouldPlay=this._pendingPlay;this._pendingPlay=false;
-      // 有 file 引用(刚导入未释放) → 同步设置 src
-      if(t.file){this.currentUrl=URL.createObjectURL(t.file);this.audio.src=this.currentUrl;this.audio.load();if(shouldPlay)this.audio.play().catch(()=>{});return;}
       // 从 IDB 按需读取单首 blob
       try{
         const blob=await this._getBlob(t.id);
