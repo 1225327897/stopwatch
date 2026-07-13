@@ -425,31 +425,34 @@
     next(){if(this.playlist.length){this._pendingPlay=this.isPlaying;this._loadTrack((this.currentTrack+1)%this.playlist.length);}},
     prev(){if(this.playlist.length){this._pendingPlay=this.isPlaying;this._loadTrack((this.currentTrack-1+this.playlist.length)%this.playlist.length);}},
 
-    // 分批写入: 每10首一批写入 IDB, playlist 只存 {id,name} 元数据, 不持有 File 引用
+    // 单事务全写: 先绑 oncomplete 再 put, 避免 tx.oncomplete 竞态导致丢数据
     async importFiles(files){
       const filtered=[];
       for(const f of files){if(f.type.startsWith('audio/'))filtered.push({name:f.name.replace(/\.[^.]+$/,''),file:f});}
       if(!filtered.length){showToast('未找到音频文件');return;}
-      let added=0;
       try{
         const db=await this._getDb();
-        const BATCH=10;
-        for(let i=0;i<filtered.length;i+=BATCH){
-          const batch=filtered.slice(i,i+BATCH);
-          const tx=db.transaction('songs','readwrite');
-          const store=tx.objectStore('songs');
-          const ids=await Promise.all(batch.map(af=>new Promise((resolve,reject)=>{
-            const req=store.put({name:af.name,blob:af.file});
-            req.onsuccess=()=>resolve(req.result);
-            req.onerror=()=>reject(req.error);
-          })));
-          for(let j=0;j<batch.length;j++){this.playlist.push({id:ids[j],name:batch[j].name});added++;}
-          await new Promise(r=>tx.oncomplete=r);
+        // 一个事务写完所有歌曲,结果存入临时 result 列表
+        const tx=db.transaction('songs','readwrite');
+        const store=tx.objectStore('songs');
+        const results=[];
+        // ⚠️ 关键: 先绑定 complete 事件,再 put —— 防止事务在绑定前就已经提交
+        const done=new Promise((resolve,reject)=>{
+          tx.oncomplete=()=>resolve();
+          tx.onerror=()=>reject(tx.error);
+          tx.onabort=()=>reject(tx.error||new Error('Transaction aborted'));
+        });
+        for(const af of filtered){
+          const req=store.put({name:af.name,blob:af.file});
+          req.onsuccess=()=>{results[results.length]={id:req.result,name:af.name};};
+          req.onerror=()=>console.error('put fail:',af.name,req.error);
         }
+        await done; // 等事务提交完毕,此时所有 onsuccess 也已触发
+        this.playlist.push(...results);
       }catch(e){console.error('Player import:',e);showToast('❌ 导入失败');return;}
       if(this.playlist.length&&this.currentTrack<0)this._loadTrack(0);
       this._render();
-      showToast(`✅ 已导入 ${added} 首歌曲`);
+      showToast(`✅ 已导入 ${this.playlist.length} 首歌曲`);
     },
 
     async _loadTrack(idx){
