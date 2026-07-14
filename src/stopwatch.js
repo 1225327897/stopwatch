@@ -397,7 +397,7 @@
     init(){
       this.audio.volume=0.7;
       this.btnPlay.addEventListener('click',()=>this.playPause()); this.btnNext.addEventListener('click',()=>this.next()); this.btnPrev.addEventListener('click',()=>this.prev());
-      this.btnImport.addEventListener('click',()=>$('#music-upload').click());
+      this.btnImport.addEventListener('click',()=>this._importFromPython());
       $('#music-upload').addEventListener('change',e=>{if(e.target.files.length)this.importFiles(e.target.files);e.target.value='';});
       this.plBtn.addEventListener('click',e=>{e.stopPropagation();this.plDropdown.classList.toggle('open');});
       $('#pl-close').addEventListener('click',()=>this.plDropdown.classList.remove('open'));
@@ -410,7 +410,7 @@
       this.audio.addEventListener('pause',()=>{this.isPlaying=false;this.btnPlay.textContent='▶';});
       this.audio.addEventListener('ended',()=>this.next());
       // 修复: 出错时移除坏轨道,不调用 next()(旧代码 next 会改 currentTrack 导致 splice 乱序)
-      this.audio.addEventListener('error',()=>{if(this._switching)return;showToast('⚠️ 无法播放该文件');const b=this.currentTrack;if(b<0)return;if(this.currentUrl){URL.revokeObjectURL(this.currentUrl);this.currentUrl=null;}const trk=this.playlist[b];this.playlist.splice(b,1);if(trk&&trk.id)this._getDb().then(db=>{const tx=db.transaction('songs','readwrite');tx.objectStore('songs').delete(trk.id);}).catch(()=>{});if(!this.playlist.length){this.currentTrack=-1;this.songTitle.textContent='未加载歌曲';this.songArtist.textContent='';this._render();return;}this._pendingPlay=this.isPlaying;this._loadTrack(b>=this.playlist.length?0:b);this._render();});
+      this.audio.addEventListener('error',()=>{if(this._switching)return;showToast('⚠️ 无法播放该文件');const b=this.currentTrack;if(b<0)return;if(this.currentUrl){URL.revokeObjectURL(this.currentUrl);this.currentUrl=null;}const trk=this.playlist[b];this.playlist.splice(b,1);if(trk&&trk.id){if(trk.source==='disk'){api('delete_music',trk.id).catch(()=>{});}else{this._getDb().then(db=>{const tx=db.transaction('songs','readwrite');tx.objectStore('songs').delete(trk.id);}).catch(()=>{});}}if(!this.playlist.length){this.currentTrack=-1;this.songTitle.textContent='未加载歌曲';this.songArtist.textContent='';this._render();return;}this._pendingPlay=this.isPlaying;this._loadTrack(b>=this.playlist.length?0:b);this._render();});
       // 事件委托: 一个监听器代替 N×2 个,500 首歌不再创建 1000 个 listener
       this.plList.addEventListener('click',e=>{const del=e.target.closest('.pl-del');if(del){e.stopPropagation();this._deleteTrack(parseInt(del.dataset.idx));return;}const item=e.target.closest('.pl-item');if(item){const i=parseInt(item.dataset.idx);this._pendingPlay=this.isPlaying;this._loadTrack(i);}});
       setTimeout(()=>this._loadSaved(),100);
@@ -425,29 +425,51 @@
     next(){if(this.playlist.length){this._pendingPlay=this.isPlaying;this._loadTrack((this.currentTrack+1)%this.playlist.length);}},
     prev(){if(this.playlist.length){this._pendingPlay=this.isPlaying;this._loadTrack((this.currentTrack-1+this.playlist.length)%this.playlist.length);}},
 
-    // 即时响应 + 后台持久化: 先加入 playlist(带 file 引用), UI 立刻更新; IDB 写完后回填 id 并释放 file
+    // 即时响应 + 后台持久化: 先加入 playlist, UI 立刻更新; 桌面环境优先直接复制到磁盘
     async importFiles(files){
       const filtered=[];
-      for(const f of files){if(f.type.startsWith('audio/'))filtered.push({name:f.name.replace(/\.[^.]+$/,''),file:f});}
+      for(const f of files){
+        if(!f.type.startsWith('audio/'))continue;
+        const name=f.name.replace(/\.[^.]+$/,'');
+        // 桌面环境优先按文件路径复制到磁盘, 避免把整个文件读进 JS/IDB 内存
+        if(window.pywebview&&f.path){
+          try{
+            const s=await api('import_music_path',f.path,name);
+            if(s){filtered.push({id:s.id,name:s.name,source:s.source||'disk'});continue;}
+          }catch(e){console.error('import_music_path',e);}
+        }
+        filtered.push({name:name,file:f,source:'idb'});
+      }
       if(!filtered.length){showToast('未找到音频文件');return;}
       // 立即加入播放列表, UI 即时响应
       const startIdx=this.playlist.length;
-      for(const af of filtered){this.playlist.push({id:0,name:af.name,file:af.file});}
+      for(const af of filtered){this.playlist.push({id:af.id||0,name:af.name,file:af.file,source:af.source||'idb'});}
       if(this.playlist.length&&this.currentTrack<0)this._loadTrack(0);
       this._render();
       showToast(`✅ 已导入 ${filtered.length} 首歌曲`);
-      // 后台存入 IDB, 完成后用真实 id 替换临时值, 释放非当前轨道的 file 引用
+      // 仅对 IDB 来源的歌曲做后台持久化
       try{
         const db=await this._getDb();
         const tx=db.transaction('songs','readwrite');
         const store=tx.objectStore('songs');
         for(let i=0;i<filtered.length;i++){
           const af=filtered[i],plIdx=startIdx+i;
+          if(af.source==='disk')continue;
           const req=store.put({name:af.name,blob:af.file});
           req.onsuccess=()=>{if(this.playlist[plIdx]){this.playlist[plIdx].id=req.result;if(plIdx!==this.currentTrack)delete this.playlist[plIdx].file;}};
           req.onerror=()=>console.error('put fail:',af.name,req.error);
         }
       }catch(e){console.error('Player save:',e);}
+    },
+
+    // 通过 Python 文件对话框导入, 文件直接复制到磁盘, 不经过 JS/IDB 内存
+    async _importFromPython(){
+      const res=await api('import_music');
+      if(!res||!res.length){showToast('未选择音频文件');return;}
+      for(const s of res){this.playlist.push({id:s.id,name:s.name,source:s.source||'disk'});}
+      if(this.playlist.length&&this.currentTrack<0)this._loadTrack(0);
+      this._render();
+      showToast(`✅ 已导入 ${res.length} 首歌曲`);
     },
 
     async _loadTrack(idx){
@@ -461,8 +483,14 @@
       if(this.currentUrl){URL.revokeObjectURL(this.currentUrl);this.currentUrl=null;}
       this.audio.removeAttribute('src');
       const shouldPlay=this._pendingPlay;this._pendingPlay=false;
+      // 磁盘歌曲: 通过 Python HTTP 端点流式播放, 不加载完整 blob 到 JS 内存
+      if(t.source==='disk'){
+        this.audio.src='/api/stream_music?id='+t.id;this.audio.load();this._switching=false;
+        if(shouldPlay)this.audio.play().catch(()=>{});return;
+      }
       // 有 file 引用(刚导入未持久化) → 同步设置 src, 无需读 IDB
       if(t.file){this.currentUrl=URL.createObjectURL(t.file);this.audio.src=this.currentUrl;this.audio.load();this._switching=false;if(shouldPlay)this.audio.play().catch(()=>{});return;}
+      // IDB 歌曲
       try{
         const blob=await this._getBlob(t.id);
         if(this.currentTrack!==idx){this._switching=false;return;}
@@ -490,12 +518,22 @@
       if(i<this.currentTrack)this.currentTrack--;
       this.playlist.splice(i,1);
       if(!this.playlist.length){this.currentTrack=-1;this.songTitle.textContent='未加载歌曲';this.songArtist.textContent='';}
-      if(track&&track.id){try{const db=await this._getDb();const tx=db.transaction('songs','readwrite');tx.objectStore('songs').delete(track.id);}catch(e){}}
+      if(track&&track.id){
+        if(track.source==='disk'){try{await api('delete_music',track.id);}catch(e){}}
+        else{try{const db=await this._getDb();const tx=db.transaction('songs','readwrite');tx.objectStore('songs').delete(track.id);}catch(e){}}
+      }
       this._render();
     },
 
-    // 修复: 用游标遍历,只读 {id,name} 元数据。不调 getAll() 避免一次性加载全部 blob
+    // 修复: 优先加载磁盘歌曲(流式,不占内存); IDB 作为浏览器/旧数据回退
     async _loadSaved(){
+      this.playlist=[];
+      // 1) 磁盘歌曲
+      try{
+        const disk=await api('get_music');
+        if(disk&&disk.length){this.playlist.push(...disk.map(s=>({id:s.id,name:s.name,source:'disk'})));}
+      }catch(e){console.error('Player get_music:',e);}
+      // 2) IDB 旧歌曲
       try{
         const db=await this._getDb();
         const tx=db.transaction('songs','readonly');
@@ -503,10 +541,14 @@
         const items=[];
         req.onsuccess=()=>{
           const cursor=req.result;
-          if(cursor){items.push({id:cursor.primaryKey,name:cursor.value.name});cursor.continue();}
-          else{if(items.length){this.playlist=items;this._render();this._loadTrack(0);showToast(`🎵 已恢复 ${this.playlist.length} 首歌曲`);}}
+          if(cursor){items.push({id:cursor.primaryKey,name:cursor.value.name,source:'idb'});cursor.continue();}
+          else{
+            if(items.length){this.playlist.push(...items);}
+            if(this.playlist.length){this._render();this._loadTrack(0);showToast(`🎵 已恢复 ${this.playlist.length} 首歌曲`);}
+            else{this._render();}
+          }
         };
-      }catch(e){console.error('Player loadSaved:',e);}
+      }catch(e){console.error('Player loadSaved:',e);if(this.playlist.length){this._render();this._loadTrack(0);}}
     },
   };
 

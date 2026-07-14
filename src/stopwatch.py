@@ -15,6 +15,7 @@ else:
     DB_DIR = os.path.join(os.path.dirname(ASSETS_DIR), 'data')
 os.makedirs(DB_DIR, exist_ok=True)
 DB_PATH = os.path.join(DB_DIR, 'stopwatch.db')
+MUSIC_DIR = os.path.join(DB_DIR, 'music')
 
 # ── Crypto helpers ──────────────────────────
 def hash_pw(pw, salt=None):
@@ -26,7 +27,28 @@ def verify_pw(pw, stored):
     salt, h = stored.split(':')
     return hash_pw(pw, salt) == stored
 
-# ── Database ───────────────────────────────
+# ── Music storage helpers ───────────────────
+def _ensure_music_table():
+    c = sqlite3.connect(DB_PATH)
+    c.execute('''CREATE TABLE IF NOT EXISTS music (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, filename TEXT,
+        created_at TEXT DEFAULT (datetime('now')))''')
+    c.commit(); c.close()
+
+def _save_music_file(src_path, name):
+    import shutil
+    _ensure_music_table()
+    os.makedirs(MUSIC_DIR, exist_ok=True)
+    ext = os.path.splitext(src_path)[1].lower()
+    filename = hashlib.md5(src_path.encode('utf-8')).hexdigest() + ext
+    dest = os.path.join(MUSIC_DIR, filename)
+    shutil.copy2(src_path, dest)
+    c = sqlite3.connect(DB_PATH)
+    c.execute('INSERT INTO music (name,filename) VALUES (?,?)', (name, filename))
+    song_id = c.lastrowid
+    c.commit(); c.close()
+    return {'id': song_id, 'name': name, 'source': 'disk'}
+
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     conn.execute('''CREATE TABLE IF NOT EXISTS presets (
@@ -50,6 +72,7 @@ def init_db():
             ('📖 阅读时间','📖',30),('🧘 冥想','🧘',10),('🏃 运动','🏃',20)])
     if conn.execute('SELECT COUNT(*) FROM countdown').fetchone()[0] == 0:
         conn.execute("INSERT INTO countdown (id,label,target_date) VALUES (1,'新年','2027-01-01')")
+    _ensure_music_table()
     conn.commit(); conn.close()
 
 # ── HTTP API + Static Server ────────────────
@@ -241,6 +264,59 @@ class APIHandler(SimpleHTTPRequestHandler):
         self.wfile.write(json.dumps(result, ensure_ascii=False).encode('utf-8'))
 
     def do_GET(self):
+        from urllib.parse import parse_qs, urlparse
+        if self.path.startswith('/api/stream_music'):
+            q = parse_qs(urlparse(self.path).query)
+            try: song_id = int(q.get('id', ['0'])[0])
+            except: song_id = 0
+            c = sqlite3.connect(DB_PATH)
+            row = c.execute('SELECT filename FROM music WHERE id=?', (song_id,)).fetchone()
+            c.close()
+            if not row:
+                self.send_response(404); self.end_headers(); return
+            filename = os.path.basename(row[0])
+            filepath = os.path.join(MUSIC_DIR, filename)
+            if not os.path.isfile(filepath):
+                self.send_response(404); self.end_headers(); return
+            import mimetypes
+            mime = mimetypes.guess_type(filepath)[0] or 'application/octet-stream'
+            size = os.path.getsize(filepath)
+            range_header = self.headers.get('Range')
+            try:
+                if range_header and range_header.startswith('bytes='):
+                    start_s, end_s = range_header[6:].split('-', 1)
+                    start = int(start_s) if start_s else 0
+                    end = int(end_s) if end_s else size - 1
+                    if start < 0 or end >= size or start > end:
+                        self.send_response(416); self.end_headers(); return
+                    self.send_response(206)
+                    self.send_header('Content-Type', mime)
+                    self.send_header('Content-Range', f'bytes {start}-{end}/{size}')
+                    self.send_header('Content-Length', end - start + 1)
+                    self.send_header('Accept-Ranges', 'bytes')
+                    self.end_headers()
+                    with open(filepath, 'rb') as f:
+                        f.seek(start)
+                        remaining = end - start + 1
+                        while remaining > 0:
+                            chunk = f.read(min(262144, remaining))
+                            if not chunk: break
+                            self.wfile.write(chunk)
+                            remaining -= len(chunk)
+                    return
+                self.send_response(200)
+                self.send_header('Content-Type', mime)
+                self.send_header('Accept-Ranges', 'bytes')
+                self.send_header('Content-Length', size)
+                self.end_headers()
+                with open(filepath, 'rb') as f:
+                    while True:
+                        chunk = f.read(262144)
+                        if not chunk: break
+                        self.wfile.write(chunk)
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
+            return
         if self.path.startswith('/api/'):
             self.send_response(405); self.end_headers(); return
         super().do_GET()
@@ -418,13 +494,59 @@ class Api:
         except: pass
     def minimize(self): self.window.minimize()
 
+    # ── Music bridge (disk-based, no IDB memory blow) ──
+    def import_music(self):
+        """打开文件对话框，把音频文件复制到 data/music，返回歌曲元数据。"""
+        try:
+            paths = self.window.create_file_dialog(
+                webview.OPEN_DIALOG, allow_multiple=True,
+                file_types=('Audio Files (*.mp3;*.wav;*.flac;*.ogg;*.m4a;*.aac;*.wma)', 'All files (*.*)'))
+        except Exception as e:
+            print(f'[import_music] dialog error: {e}'); return []
+        if not paths: return []
+        added = []
+        for p in paths:
+            if not os.path.isfile(p): continue
+            name = os.path.splitext(os.path.basename(p))[0]
+            try: added.append(_save_music_file(p, name))
+            except Exception as e: print(f'[import_music] {p}: {e}')
+        return added
+
+    def import_music_path(self, src_path, name):
+        """由 JS 文件输入兜底调用：按路径复制文件到 data/music。"""
+        if not src_path or not os.path.isfile(src_path): return None
+        try: return _save_music_file(src_path, name)
+        except Exception as e: print(f'[import_music_path] {e}'); return None
+
+    def get_music(self):
+        """返回所有已导入的磁盘歌曲列表。"""
+        _ensure_music_table()
+        c = sqlite3.connect(DB_PATH)
+        rows = c.execute('SELECT id, name FROM music ORDER BY id').fetchall()
+        c.close()
+        return [{'id': r[0], 'name': r[1], 'source': 'disk'} for r in rows]
+
+    def delete_music(self, song_id):
+        """删除指定歌曲的磁盘文件和数据库记录。"""
+        if not song_id: return False
+        c = sqlite3.connect(DB_PATH)
+        row = c.execute('SELECT filename FROM music WHERE id=?', (song_id,)).fetchone()
+        if row:
+            filepath = os.path.join(MUSIC_DIR, os.path.basename(row[0]))
+            if os.path.isfile(filepath): os.remove(filepath)
+            c.execute('DELETE FROM music WHERE id=?', (song_id,))
+            c.commit()
+        c.close()
+        return True
+
 def main():
     init_db()
     port = start_server()
     url = f'http://127.0.0.1:{port}/login.html'
     win = webview.create_window(title=APP_TITLE, url=url, width=APP_WIDTH, height=APP_HEIGHT, min_size=(800,600), resizable=True)
     api = Api(win)
-    win.expose(api.toggle_fullscreen, api.flash_window, api.restore_window, api.alert_sound, api.minimize)
+    win.expose(api.toggle_fullscreen, api.flash_window, api.restore_window, api.alert_sound, api.minimize,
+               api.import_music, api.import_music_path, api.get_music, api.delete_music)
     webview.start(debug=False, http_server=False, gui='edgechromium')
 
 if __name__ == '__main__': main()
