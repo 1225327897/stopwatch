@@ -116,6 +116,7 @@ $RECYCLE.BIN/
 cache/
 user_data/
 userdata/
+data/
 *.bak
 *.tmp
 *.temp

@@ -551,11 +551,10 @@ class Api:
             try:
                 c.execute('INSERT INTO music (name,filename) VALUES (?,?)', (display_name, fn))
                 registered += 1
-                print(f'[rescan_music] registered orphan: {fn}')
             except Exception as e:
                 print(f'[rescan_music] {fn}: {e}')
         c.commit(); c.close()
-        if registered: print(f'[rescan_music] total registered: {registered}')
+        if registered: print(f'[rescan_music] registered {registered} orphan file(s)')
         return self.get_music()
 
     def delete_music(self, song_id):

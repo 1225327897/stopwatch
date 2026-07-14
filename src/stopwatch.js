@@ -9,8 +9,21 @@
 
   // Try to call a pywebview API, return null if not available
   async function api(name, ...args) {
+    if(!window.pywebview||!window.pywebview.api){
+      // pywebview not ready yet — wait for it (max 5s)
+      const ok = await new Promise(res => {
+        if(window.pywebview&&window.pywebview.api) return res(true);
+        let waited = 0;
+        const t = setInterval(()=>{
+          waited += 100;
+          if(window.pywebview&&window.pywebview.api){clearInterval(t);res(true);}
+          else if(waited>=5000){clearInterval(t);res(false);}
+        },100);
+      });
+      if(!ok){console.warn('[api] pywebview not ready for',name);return null;}
+    }
     try { return await window.pywebview.api[name](...args); }
-    catch(e) { return null; }
+    catch(e) { console.error('[api]',name,'errored:',e); return null; }
   }
 
   // HTTP API for presets (bypasses pywebview bridge, 100% reliable)
