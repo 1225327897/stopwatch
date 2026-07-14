@@ -417,7 +417,7 @@
     },
 
     // DB 连接缓存 + v2→v3 迁移 (keyPath name→id autoIncrement)
-    _getDb(){return new Promise((resolve,reject)=>{if(this._db){resolve(this._db);return;}const req=indexedDB.open('stopwatch-audio',3);req.onupgradeneeded=e=>{const db=req.result;if(!db.objectStoreNames.contains('songs')){db.createObjectStore('songs',{keyPath:'id',autoIncrement:true});}else if(e.oldVersion<3){const oldStore=e.target.transaction.objectStore('songs');const allReq=oldStore.getAll();allReq.onsuccess=()=>{const old=allReq.result||[];db.deleteObjectStore('songs');const ns=db.createObjectStore('songs',{keyPath:'id',autoIncrement:true});old.forEach(item=>{if(item.blob)ns.put({name:item.name||'unknown',blob:item.blob});});};}};req.onsuccess=()=>{this._db=req.result;resolve(req.result);};req.onerror=()=>reject(req.error);});},
+    _getDb(){return new Promise((resolve,reject)=>{if(this._db){resolve(this._db);return;}const req=indexedDB.open('stopwatch-audio',3);req.onupgradeneeded=e=>{const db=req.result;if(!db.objectStoreNames.contains('songs')){db.createObjectStore('songs',{keyPath:'id',autoIncrement:true});}else if(e.oldVersion<3){const oldStore=e.target.transaction.objectStore('songs');const allReq=oldStore.getAll();allReq.onsuccess=()=>{const old=allReq.result||[];db.deleteObjectStore('songs');const ns=db.createObjectStore('songs',{keyPath:'id',autoIncrement:true});old.forEach(item=>{if(item.blob)ns.put({name:item.name||'unknown',blob:item.blob});});};};req.onsuccess=()=>{this._db=req.result;resolve(req.result);};req.onerror=()=>reject(req.error);req.onblocked=()=>console.warn('IDB blocked: close other tabs');});},
     // 按需加载单首歌曲的 blob
     _getBlob(id){return this._getDb().then(db=>new Promise((resolve,reject)=>{const tx=db.transaction('songs','readonly');const req=tx.objectStore('songs').get(id);req.onsuccess=()=>resolve(req.result?req.result.blob:null);req.onerror=()=>reject(req.error);}));},
 
@@ -425,34 +425,29 @@
     next(){if(this.playlist.length){this._pendingPlay=this.isPlaying;this._loadTrack((this.currentTrack+1)%this.playlist.length);}},
     prev(){if(this.playlist.length){this._pendingPlay=this.isPlaying;this._loadTrack((this.currentTrack-1+this.playlist.length)%this.playlist.length);}},
 
-    // 单事务全写: 先绑 oncomplete 再 put, 避免 tx.oncomplete 竞态导致丢数据
+    // 即时响应 + 后台持久化: 先加入 playlist(带 file 引用), UI 立刻更新; IDB 写完后回填 id 并释放 file
     async importFiles(files){
       const filtered=[];
       for(const f of files){if(f.type.startsWith('audio/'))filtered.push({name:f.name.replace(/\.[^.]+$/,''),file:f});}
       if(!filtered.length){showToast('未找到音频文件');return;}
-      try{
-        const db=await this._getDb();
-        // 一个事务写完所有歌曲,结果存入临时 result 列表
-        const tx=db.transaction('songs','readwrite');
-        const store=tx.objectStore('songs');
-        const results=[];
-        // ⚠️ 关键: 先绑定 complete 事件,再 put —— 防止事务在绑定前就已经提交
-        const done=new Promise((resolve,reject)=>{
-          tx.oncomplete=()=>resolve();
-          tx.onerror=()=>reject(tx.error);
-          tx.onabort=()=>reject(tx.error||new Error('Transaction aborted'));
-        });
-        for(const af of filtered){
-          const req=store.put({name:af.name,blob:af.file});
-          req.onsuccess=()=>{results[results.length]={id:req.result,name:af.name};};
-          req.onerror=()=>console.error('put fail:',af.name,req.error);
-        }
-        await done; // 等事务提交完毕,此时所有 onsuccess 也已触发
-        this.playlist.push(...results);
-      }catch(e){console.error('Player import:',e);showToast('❌ 导入失败');return;}
+      // 立即加入播放列表, UI 即时响应
+      const startIdx=this.playlist.length;
+      for(const af of filtered){this.playlist.push({id:0,name:af.name,file:af.file});}
       if(this.playlist.length&&this.currentTrack<0)this._loadTrack(0);
       this._render();
-      showToast(`✅ 已导入 ${this.playlist.length} 首歌曲`);
+      showToast(`✅ 已导入 ${filtered.length} 首歌曲`);
+      // 后台存入 IDB, 完成后用真实 id 替换临时值, 释放非当前轨道的 file 引用
+      try{
+        const db=await this._getDb();
+        const tx=db.transaction('songs','readwrite');
+        const store=tx.objectStore('songs');
+        for(let i=0;i<filtered.length;i++){
+          const af=filtered[i],plIdx=startIdx+i;
+          const req=store.put({name:af.name,blob:af.file});
+          req.onsuccess=()=>{if(this.playlist[plIdx]){this.playlist[plIdx].id=req.result;if(plIdx!==this.currentTrack)delete this.playlist[plIdx].file;}};
+          req.onerror=()=>console.error('put fail:',af.name,req.error);
+        }
+      }catch(e){console.error('Player save:',e);}
     },
 
     async _loadTrack(idx){
@@ -466,6 +461,8 @@
       if(this.currentUrl){URL.revokeObjectURL(this.currentUrl);this.currentUrl=null;}
       this.audio.removeAttribute('src');
       const shouldPlay=this._pendingPlay;this._pendingPlay=false;
+      // 有 file 引用(刚导入未持久化) → 同步设置 src, 无需读 IDB
+      if(t.file){this.currentUrl=URL.createObjectURL(t.file);this.audio.src=this.currentUrl;this.audio.load();this._switching=false;if(shouldPlay)this.audio.play().catch(()=>{});return;}
       try{
         const blob=await this._getBlob(t.id);
         if(this.currentTrack!==idx){this._switching=false;return;}
