@@ -40,6 +40,8 @@
       s: String(totalSec % 60).padStart(2, '0'),
     };
   }
+  function fmtTimeStr(ms) { const t=fmtTime(ms); return `${t.h}:${t.m}:${t.s}`; }
+  function fmtTimeShort(ms) { const t=fmtTime(ms); return t.h==='00' ? `${t.m}:${t.s}` : `${t.h}:${t.m}:${t.s}`; }
 
   function fmtTimeParts(t) {
     return { h1:t.h[0],h2:t.h[1],m1:t.m[0],m2:t.m[1],s1:t.s[0],s2:t.s[1] };
@@ -405,7 +407,7 @@
     songTitle:$('#song-title'),songArtist:$('#song-artist'),timeCur:$('#time-current'),timeTotal:$('#time-total'),
     progressBar:$('#progress-bar'),progressFill:$('#progress-fill'),
     volSlider:$('#volume-slider'),volIcon:$('#vol-icon'),volPopup:$('#vol-popup'),volNum:$('#vol-num'),
-    plBtn:$('#btn-playlist'),plDropdown:$('#playlist-dropdown'),plList:$('#playlist-list'),plCount:$('#pl-count'),
+    plBtn:$('#btn-playlist'),plDropdown:$('#playlist-dropdown'),plList:$('#playlist-list'),plCount:$('#pl-count'),btnRefresh:$('#pl-refresh'),
 
     init(){
       this.audio.volume=0.7;
@@ -414,11 +416,12 @@
       $('#music-upload').addEventListener('change',e=>{if(e.target.files.length)this.importFiles(e.target.files);e.target.value='';});
       this.plBtn.addEventListener('click',e=>{e.stopPropagation();this.plDropdown.classList.toggle('open');});
       $('#pl-close').addEventListener('click',()=>this.plDropdown.classList.remove('open'));
+      this.btnRefresh.addEventListener('click',()=>this._refreshPlaylist());
       this.progressBar.addEventListener('click',e=>{if(!this.audio.duration)return;const r=this.progressBar.getBoundingClientRect();this.audio.currentTime=((e.clientX-r.left)/r.width)*this.audio.duration;});
       this.volSlider.addEventListener('input',()=>this._setVol(this.volSlider.value/100));
       this.volIcon.addEventListener('click',e=>{e.stopPropagation();this.volPopup.classList.toggle('show');});
-      this.audio.addEventListener('loadedmetadata',()=>{this.timeTotal.textContent=fmtTime(this.audio.duration||0);});
-      this.audio.addEventListener('timeupdate',()=>{this.progressFill.style.width=this.audio.duration?(this.audio.currentTime/this.audio.duration*100)+'%':'0%';this.timeCur.textContent=fmtTime(this.audio.currentTime);});
+      this.audio.addEventListener('loadedmetadata',()=>{this.timeTotal.textContent=fmtTimeShort(this.audio.duration||0);});
+      this.audio.addEventListener('timeupdate',()=>{this.progressFill.style.width=this.audio.duration?(this.audio.currentTime/this.audio.duration*100)+'%':'0%';this.timeCur.textContent=fmtTimeShort(this.audio.currentTime);});
       this.audio.addEventListener('play',()=>{this.isPlaying=true;this.btnPlay.textContent='⏸';});
       this.audio.addEventListener('pause',()=>{this.isPlaying=false;this.btnPlay.textContent='▶';});
       this.audio.addEventListener('ended',()=>this.next());
@@ -438,41 +441,53 @@
     next(){if(this.playlist.length){this._pendingPlay=this.isPlaying;this._loadTrack((this.currentTrack+1)%this.playlist.length);}},
     prev(){if(this.playlist.length){this._pendingPlay=this.isPlaying;this._loadTrack((this.currentTrack-1+this.playlist.length)%this.playlist.length);}},
 
-    // 即时响应 + 后台持久化: 先加入 playlist, UI 立刻更新; 桌面环境优先直接复制到磁盘
+    // 纯磁盘存储: HTTP 上传到 Python 后端, 不经过 pywebview bridge / IDB, 避免内存暴涨
     async importFiles(files){
+      if(!files||!files.length){showToast('未选择文件');return;}
       const filtered=[];
       for(const f of files){
-        if(!f.type.startsWith('audio/'))continue;
+        const isAudio=f.type.startsWith('audio/')||/\.(mp3|wav|flac|ogg|m4a|aac|wma)$/i.test(f.name);
+        if(!isAudio){showToast(`⏭️ ${f.name} 不是音频文件`);continue;}
         const name=f.name.replace(/\.[^.]+$/,'');
-        // 桌面环境优先按文件路径复制到磁盘, 避免把整个文件读进 JS/IDB 内存
-        if(window.pywebview&&f.path){
-          try{
-            const s=await api('import_music_path',f.path,name);
-            if(s){filtered.push({id:s.id,name:s.name,source:s.source||'disk'});continue;}
-          }catch(e){console.error('import_music_path',e);}
+        const ext=(f.name.match(/\.[^.]+$/)||['.mp3'])[0];
+        let ok=false;
+        // 1) 优先 HTTP 上传 (无 base64 开销, 不经过 pywebview bridge)
+        try{
+          const resp=await fetch(`/api/upload_music?name=${encodeURIComponent(name)}&ext=${encodeURIComponent(ext)}`,{
+            method:'POST', body:f
+          });
+          if(resp.ok){
+            const s=await resp.json();
+            if(s&&s.id){filtered.push({id:s.id,name:s.name,source:'disk'});ok=true;}
+            else{showToast(`⚠️ ${name}: 服务器返回异常`);}
+          }else{
+            const txt=await resp.text().catch(()=>'');
+            showToast(`⚠️ ${name}: HTTP ${resp.status} ${txt.slice(0,80)}`);
+          }
+        }catch(e){
+          showToast(`⚠️ ${name}: 上传失败 ${e.message||e}`);
+          console.error('upload_music',e);
         }
-        filtered.push({name:name,file:f,source:'idb'});
+        // 2) 兜底: base64 经 pywebview bridge (小文件可用)
+        if(!ok&&window.pywebview&&window.pywebview.api){
+          try{
+            const b64=await new Promise((res,rej)=>{
+              const r=new FileReader();
+              r.onload=()=>res(r.result.split(',')[1]);
+              r.onerror=rej;
+              r.readAsDataURL(f);
+            });
+            const s=await api('import_music_base64',name,b64,ext);
+            if(s&&s.id){filtered.push({id:s.id,name:s.name,source:'disk'});ok=true;}
+          }catch(e){console.error('import_music_base64 fallback',e);}
+        }
+        if(!ok) showToast(`❌ ${name} 导入失败`);
       }
       if(!filtered.length){showToast('未找到音频文件');return;}
-      // 立即加入播放列表, UI 即时响应
-      const startIdx=this.playlist.length;
-      for(const af of filtered){this.playlist.push({id:af.id||0,name:af.name,file:af.file,source:af.source||'idb'});}
+      for(const af of filtered){this.playlist.push({id:af.id,name:af.name,source:'disk'});}
       if(this.playlist.length&&this.currentTrack<0)this._loadTrack(0);
       this._render();
       showToast(`✅ 已导入 ${filtered.length} 首歌曲`);
-      // 仅对 IDB 来源的歌曲做后台持久化
-      try{
-        const db=await this._getDb();
-        const tx=db.transaction('songs','readwrite');
-        const store=tx.objectStore('songs');
-        for(let i=0;i<filtered.length;i++){
-          const af=filtered[i],plIdx=startIdx+i;
-          if(af.source==='disk')continue;
-          const req=store.put({name:af.name,blob:af.file});
-          req.onsuccess=()=>{if(this.playlist[plIdx]){this.playlist[plIdx].id=req.result;if(plIdx!==this.currentTrack)delete this.playlist[plIdx].file;}};
-          req.onerror=()=>console.error('put fail:',af.name,req.error);
-        }
-      }catch(e){console.error('Player save:',e);}
     },
 
     // 通过 Python 文件对话框导入, 文件直接复制到磁盘, 不经过 JS/IDB 内存
@@ -566,6 +581,21 @@
           }
         };
       }catch(e){console.error('Player loadSaved:',e);if(this.playlist.length){this._render();this._loadTrack(0);}}
+    },
+
+    async _refreshPlaylist(){
+      this.playlist=[];
+      this.currentTrack=-1;
+      this.audio.pause();this.audio.src='';
+      if(this.currentUrl){URL.revokeObjectURL(this.currentUrl);this.currentUrl=null;}
+      this.songTitle.textContent='未加载歌曲';this.songArtist.textContent='';
+      try{
+        const disk=await api('rescan_music');
+        if(disk&&disk.length){this.playlist.push(...disk.map(s=>({id:s.id,name:s.name,source:'disk'})));}
+      }catch(e){console.error('Player refresh:',e);}
+      this._render();
+      if(this.playlist.length){this._loadTrack(0);showToast(`🎵 已刷新 ${this.playlist.length} 首歌曲`);}
+      else{showToast('🎵 歌单已清空');}
     },
   };
 

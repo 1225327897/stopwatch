@@ -1115,7 +1115,17 @@ body {
   cursor: pointer; font-size: 0.75rem;
   display: flex; align-items: center; justify-content: center;
 }
+#pl-close { margin-left: 0.4rem; }
 #pl-close:hover { color: var(--text-primary); border-color: var(--border-focus); }
+#pl-refresh {
+  width: 26px; height: 26px; border-radius: 50%;
+  border: 1px solid var(--border);
+  background: transparent; color: var(--text-secondary);
+  cursor: pointer; font-size: 0.75rem;
+  display: flex; align-items: center; justify-content: center;
+}
+#pl-refresh:hover { color: var(--text-primary); border-color: var(--border-focus); }
+.pl-actions { display: flex; align-items: center; gap: 0.3rem; }
 #playlist-list {
   padding: 0.4rem;
   overflow-y: auto; flex: 1;

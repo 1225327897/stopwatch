@@ -2,7 +2,10 @@
 """须臾 — Desktop Edition"""
 
 import os, sys, json, sqlite3, webview, threading, hashlib, uuid, secrets
-from http.server import HTTPServer, SimpleHTTPRequestHandler
+
+# ── Global DB lock ─ SQLite file locking is per-process, serialize all DB access here ─
+DB_LOCK = threading.RLock()
+from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 
 APP_TITLE = "须臾"
 APP_WIDTH, APP_HEIGHT = 1200, 800
@@ -29,57 +32,61 @@ def verify_pw(pw, stored):
 
 # ── Music storage helpers ───────────────────
 def _ensure_music_table():
-    c = sqlite3.connect(DB_PATH)
-    c.execute('''CREATE TABLE IF NOT EXISTS music (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, filename TEXT,
-        created_at TEXT DEFAULT (datetime('now')))''')
-    c.commit(); c.close()
+    with DB_LOCK:
+        c = sqlite3.connect(DB_PATH, timeout=30.0)
+        c.execute('''CREATE TABLE IF NOT EXISTS music (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, filename TEXT,
+            created_at TEXT DEFAULT (datetime('now')))''')
+        c.commit(); c.close()
 
 def _save_music_file(src_path, name):
     import shutil
-    _ensure_music_table()
-    os.makedirs(MUSIC_DIR, exist_ok=True)
     ext = os.path.splitext(src_path)[1].lower()
     filename = hashlib.md5(src_path.encode('utf-8')).hexdigest() + ext
     dest = os.path.join(MUSIC_DIR, filename)
-    c = sqlite3.connect(DB_PATH)
-    existing = c.execute('SELECT id FROM music WHERE filename=?', (filename,)).fetchone()
-    if existing:
-        c.execute('UPDATE music SET name=? WHERE id=?', (name, existing[0]))
-        song_id = existing[0]
-        c.commit(); c.close()
-        return {'id': song_id, 'name': name, 'source': 'disk'}
+    os.makedirs(MUSIC_DIR, exist_ok=True)
     shutil.copy2(src_path, dest)
-    c.execute('INSERT INTO music (name,filename) VALUES (?,?)', (name, filename))
-    song_id = c.lastrowid
-    c.commit(); c.close()
+    with DB_LOCK:
+        c = sqlite3.connect(DB_PATH, timeout=30.0)
+        existing = c.execute('SELECT id FROM music WHERE filename=?', (filename,)).fetchone()
+        if existing:
+            c.execute('UPDATE music SET name=? WHERE id=?', (name, existing[0]))
+            c.commit(); c.close()
+            return {'id': existing[0], 'name': name, 'source': 'disk'}
+        cursor = c.execute('INSERT INTO music (name,filename) VALUES (?,?)', (name, filename))
+        song_id = cursor.lastrowid
+        c.commit(); c.close()
     return {'id': song_id, 'name': name, 'source': 'disk'}
 
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute('''CREATE TABLE IF NOT EXISTS presets (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, icon TEXT DEFAULT '⏰',
-        minutes INTEGER NOT NULL, created_at TEXT DEFAULT (datetime('now')))''')
-    conn.execute('''CREATE TABLE IF NOT EXISTS pomodoro_history (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, preset_name TEXT, minutes INTEGER,
-        started_at TEXT DEFAULT (datetime('now')), completed INTEGER DEFAULT 0)''')
-    conn.execute('''CREATE TABLE IF NOT EXISTS countdown (
-        id INTEGER PRIMARY KEY CHECK(id=1), label TEXT DEFAULT '新年', target_date TEXT,
-        updated_at TEXT DEFAULT (datetime('now')))''')
-    conn.execute('''CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL,
-        password TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')))''')
-    conn.execute('''CREATE TABLE IF NOT EXISTS sessions (
-        token TEXT PRIMARY KEY, user_id INTEGER NOT NULL,
-        created_at TEXT DEFAULT (datetime('now')))''')
-    if conn.execute('SELECT COUNT(*) FROM presets').fetchone()[0] == 0:
-        conn.executemany('INSERT INTO presets (name,icon,minutes) VALUES (?,?,?)', [
-            ('🍅 专注工作','🍅',25),('☕ 放松时刻','☕',15),('💻 代码模式','💻',45),
-            ('📖 阅读时间','📖',30),('🧘 冥想','🧘',10),('🏃 运动','🏃',20)])
-    if conn.execute('SELECT COUNT(*) FROM countdown').fetchone()[0] == 0:
-        conn.execute("INSERT INTO countdown (id,label,target_date) VALUES (1,'新年','2027-01-01')")
-    _ensure_music_table()
-    conn.commit(); conn.close()
+    with DB_LOCK:
+        conn = sqlite3.connect(DB_PATH, timeout=30.0)
+        conn.execute('PRAGMA journal_mode=WAL')
+        conn.execute('''CREATE TABLE IF NOT EXISTS presets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, icon TEXT DEFAULT '⏰',
+            minutes INTEGER NOT NULL, created_at TEXT DEFAULT (datetime('now')))''')
+        conn.execute('''CREATE TABLE IF NOT EXISTS pomodoro_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, preset_name TEXT, minutes INTEGER,
+            started_at TEXT DEFAULT (datetime('now')), completed INTEGER DEFAULT 0)''')
+        conn.execute('''CREATE TABLE IF NOT EXISTS countdown (
+            id INTEGER PRIMARY KEY CHECK(id=1), label TEXT DEFAULT '新年', target_date TEXT,
+            updated_at TEXT DEFAULT (datetime('now')))''')
+        conn.execute('''CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL,
+            password TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')))''')
+        conn.execute('''CREATE TABLE IF NOT EXISTS sessions (
+            token TEXT PRIMARY KEY, user_id INTEGER NOT NULL,
+            created_at TEXT DEFAULT (datetime('now')))''')
+        if conn.execute('SELECT COUNT(*) FROM presets').fetchone()[0] == 0:
+            conn.executemany('INSERT INTO presets (name,icon,minutes) VALUES (?,?,?)', [
+                ('🍅 专注工作','🍅',25),('☕ 放松时刻','☕',15),('💻 代码模式','💻',45),
+                ('📖 阅读时间','📖',30),('🧘 冥想','🧘',10),('🏃 运动','🏃',20)])
+        if conn.execute('SELECT COUNT(*) FROM countdown').fetchone()[0] == 0:
+            conn.execute("INSERT INTO countdown (id,label,target_date) VALUES (1,'新年','2027-01-01')")
+        conn.execute('''CREATE TABLE IF NOT EXISTS music (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, filename TEXT,
+            created_at TEXT DEFAULT (datetime('now')))''')
+        conn.commit(); conn.close()
 
 # ── HTTP API + Static Server ────────────────
 class APIHandler(SimpleHTTPRequestHandler):
@@ -89,13 +96,52 @@ class APIHandler(SimpleHTTPRequestHandler):
     def _check_session(self):
         token = self.headers.get('Authorization','').replace('Bearer ','')
         if not token: return None
-        c = sqlite3.connect(DB_PATH)
+        c = sqlite3.connect(DB_PATH, timeout=30.0)
         r = c.execute('SELECT user_id FROM sessions WHERE token=?',(token,)).fetchone()
         c.close()
         return r[0] if r else None
 
     def do_POST(self):
         path = self.path.split('?')[0]
+
+        # ── 文件上传: 原始二进制 body, 文件名/扩展名走 query string ──
+        if path == '/api/upload_music':
+            from urllib.parse import parse_qs, urlparse
+            import tempfile
+            q = parse_qs(urlparse(self.path).query)
+            name = q.get('name', [''])[0]
+            ext = q.get('ext', ['.mp3'])[0]
+            if not ext.startswith('.'): ext = '.' + ext
+            try:
+                length = int(self.headers.get('Content-Length', 0))
+                if length:
+                    raw = self.rfile.read(length)
+                else:
+                    # fallback: chunked 或缺 Content-Length 时按最大 50MB 兜底读
+                    raw = self.rfile.read(50 * 1024 * 1024)
+                if not raw:
+                    self.send_response(400); self.send_header('Content-Type','application/json'); self.end_headers()
+                    self.wfile.write(b'{"error":"empty body"}'); return
+                fd, tmp = tempfile.mkstemp(suffix=ext)
+                with os.fdopen(fd, 'wb') as fw: fw.write(raw)
+                try:
+                    result = _save_music_file(tmp, name or '未命名')
+                finally:
+                    try: os.unlink(tmp)
+                    except: pass
+                if not result:
+                    self.send_response(500); self.send_header('Content-Type','application/json'); self.end_headers()
+                    self.wfile.write(b'{"error":"save failed"}'); return
+                self.send_response(200)
+                self.send_header('Content-Type','application/json'); self.end_headers()
+                self.wfile.write(json.dumps(result, ensure_ascii=False).encode('utf-8'))
+                return
+            except Exception as e:
+                print(f'[upload_music] {e}')
+                self.send_response(500); self.send_header('Content-Type','application/json'); self.end_headers()
+                self.wfile.write(json.dumps({'error': str(e)}, ensure_ascii=False).encode('utf-8'))
+                return
+
         length = int(self.headers.get('Content-Length', 0))
         body = self.rfile.read(length).decode('utf-8') if length else '{}'
         try: data = json.loads(body)
@@ -125,7 +171,7 @@ class APIHandler(SimpleHTTPRequestHandler):
                 if seq_found:
                     code = 400; result = {'error':'密码不允许包含连续数字（如123或432）'}
                 else:
-                    c = sqlite3.connect(DB_PATH)
+                    c = sqlite3.connect(DB_PATH, timeout=30.0)
                     if c.execute('SELECT id FROM users WHERE username=?',(username,)).fetchone():
                         code = 400; result = {'error':'账号已存在'}
                     else:
@@ -137,7 +183,7 @@ class APIHandler(SimpleHTTPRequestHandler):
         elif path == '/api/login':
             username = data.get('username','').strip()
             password = data.get('password','')
-            c = sqlite3.connect(DB_PATH)
+            c = sqlite3.connect(DB_PATH, timeout=30.0)
             row = c.execute('SELECT id,password FROM users WHERE username=?',(username,)).fetchone()
             if row and verify_pw(password, row[1]):
                 token = secrets.token_urlsafe(32)
@@ -153,7 +199,7 @@ class APIHandler(SimpleHTTPRequestHandler):
         elif path == '/api/logout':
             token = self.headers.get('Authorization','').replace('Bearer ','')
             if token:
-                c = sqlite3.connect(DB_PATH)
+                c = sqlite3.connect(DB_PATH, timeout=30.0)
                 c.execute('DELETE FROM sessions WHERE token=?',(token,)); c.commit(); c.close()
             result = {'ok':True}
 
@@ -170,7 +216,7 @@ class APIHandler(SimpleHTTPRequestHandler):
                 if len(new_pw) < 7:
                     code = 400; result = {'error':'新密码需 >6 位'}
                 else:
-                    c = sqlite3.connect(DB_PATH)
+                    c = sqlite3.connect(DB_PATH, timeout=30.0)
                     row = c.execute('SELECT password FROM users WHERE id=?',(user_id,)).fetchone()
                     if row and verify_pw(old_pw, row[0]):
                         c.execute('UPDATE users SET password=? WHERE id=?',(hash_pw(new_pw), user_id))
@@ -180,7 +226,7 @@ class APIHandler(SimpleHTTPRequestHandler):
                         code = 400; result = {'error':'当前密码错误'}
                         c.close()
         elif path == '/api/save_accounts':
-            c = sqlite3.connect(DB_PATH)
+            c = sqlite3.connect(DB_PATH, timeout=30.0)
             c.execute('CREATE TABLE IF NOT EXISTS account_history (username TEXT PRIMARY KEY, password TEXT)')
             accounts = data.get('accounts', [])
             for a in accounts:
@@ -189,7 +235,7 @@ class APIHandler(SimpleHTTPRequestHandler):
             c.commit(); c.close()
             result = {'ok': True}
         elif path == '/api/get_accounts':
-            c = sqlite3.connect(DB_PATH)
+            c = sqlite3.connect(DB_PATH, timeout=30.0)
             c.execute('CREATE TABLE IF NOT EXISTS account_history (username TEXT PRIMARY KEY, password TEXT)')
             rows = c.execute('SELECT username,password FROM account_history ORDER BY username').fetchall()
             c.close()
@@ -198,40 +244,40 @@ class APIHandler(SimpleHTTPRequestHandler):
         # ── EXISTING ENDPOINTS (no auth needed) ──
         elif path == '/api/save_preset':
             name, icon, mins = data.get('name',''), data.get('icon','⏰'), int(data.get('minutes',25))
-            c = sqlite3.connect(DB_PATH)
+            c = sqlite3.connect(DB_PATH, timeout=30.0)
             if c.execute('SELECT id FROM presets WHERE name=?',(name,)).fetchone():
                 c.execute('UPDATE presets SET icon=?,minutes=? WHERE name=?',(icon,mins,name))
             else: c.execute('INSERT INTO presets (name,icon,minutes) VALUES (?,?,?)',(name,icon,mins))
             c.commit(); r = c.execute('SELECT * FROM presets WHERE name=?',(name,)).fetchone(); c.close()
             result = {'id':r[0],'name':r[1],'icon':r[2],'minutes':r[3]}
         elif path == '/api/get_presets':
-            c = sqlite3.connect(DB_PATH); rows = c.execute('SELECT * FROM presets ORDER BY id').fetchall(); c.close()
+            c = sqlite3.connect(DB_PATH, timeout=30.0); rows = c.execute('SELECT * FROM presets ORDER BY id').fetchall(); c.close()
             result = [{'id':r[0],'name':r[1],'icon':r[2],'minutes':r[3]} for r in rows]
         elif path == '/api/delete_preset':
-            c = sqlite3.connect(DB_PATH); c.execute('DELETE FROM presets WHERE id=?',(int(data.get('id',0)),)); c.commit(); c.close()
+            c = sqlite3.connect(DB_PATH, timeout=30.0); c.execute('DELETE FROM presets WHERE id=?',(int(data.get('id',0)),)); c.commit(); c.close()
             result = {'ok':True}
         elif path == '/api/record_pomodoro':
-            c = sqlite3.connect(DB_PATH)
+            c = sqlite3.connect(DB_PATH, timeout=30.0)
             c.execute('INSERT INTO pomodoro_history (preset_name,minutes,completed) VALUES (?,?,?)',
                       (data.get('name',''), int(data.get('minutes',0)), 1 if data.get('completed') else 0))
             c.commit(); c.close(); result = {'ok':True}
         elif path == '/api/get_history':
-            c = sqlite3.connect(DB_PATH)
+            c = sqlite3.connect(DB_PATH, timeout=30.0)
             rows = c.execute('SELECT * FROM pomodoro_history ORDER BY id DESC LIMIT ?',(int(data.get('limit',50)),)).fetchall(); c.close()
             result = [{'id':r[0],'preset_name':r[1],'minutes':r[2],'started_at':r[3],'completed':bool(r[4])} for r in rows]
         elif path == '/api/get_stats':
-            c = sqlite3.connect(DB_PATH)
+            c = sqlite3.connect(DB_PATH, timeout=30.0)
             rows = c.execute("SELECT date(started_at) as day, SUM(minutes) as total FROM pomodoro_history WHERE completed=1 AND started_at>=date('now',?) GROUP BY day ORDER BY day",
                            (f'-{int(data.get("days",14))} days',)).fetchall(); c.close()
             result = [{'day':r[0],'minutes':r[1]} for r in rows]
         elif path == '/api/save_countdown':
-            c = sqlite3.connect(DB_PATH)
+            c = sqlite3.connect(DB_PATH, timeout=30.0)
             c.execute('INSERT OR REPLACE INTO countdown (id,label,target_date) VALUES (1,?,?)',
                       (data.get('label','新年'), data.get('date','')))
             c.commit(); r = c.execute('SELECT * FROM countdown WHERE id=1').fetchone(); c.close()
             result = {'label':r[1], 'date':r[2]} if r else {}
         elif path == '/api/get_countdown':
-            c = sqlite3.connect(DB_PATH)
+            c = sqlite3.connect(DB_PATH, timeout=30.0)
             r = c.execute('SELECT * FROM countdown WHERE id=1').fetchone(); c.close()
             result = {'label':r[1], 'date':r[2]} if r else {'label':'新年','date':'2027-01-01'}
         elif path == '/api/ping':
@@ -275,7 +321,7 @@ class APIHandler(SimpleHTTPRequestHandler):
             q = parse_qs(urlparse(self.path).query)
             try: song_id = int(q.get('id', ['0'])[0])
             except: song_id = 0
-            c = sqlite3.connect(DB_PATH)
+            c = sqlite3.connect(DB_PATH, timeout=30.0)
             row = c.execute('SELECT filename FROM music WHERE id=?', (song_id,)).fetchone()
             c.close()
             if not row:
@@ -328,13 +374,13 @@ class APIHandler(SimpleHTTPRequestHandler):
         super().do_GET()
 
 def start_server(port=51342):
-    for _ in range(5):
+    for _ in range(50):
         try:
-            s = HTTPServer(('127.0.0.1', port), APIHandler)
+            s = ThreadingHTTPServer(('127.0.0.1', port), APIHandler)
             threading.Thread(target=s.serve_forever, daemon=True).start()
             return port
         except OSError: port += 1
-    raise RuntimeError("Cannot bind server")
+    raise RuntimeError("Cannot bind server after 50 attempts")
 
 # ── pywebview Bridge ──
 class Api:
@@ -524,63 +570,103 @@ class Api:
         try: return _save_music_file(src_path, name)
         except Exception as e: print(f'[import_music_path] {e}'); return None
 
+    def import_music_base64(self, name, data_b64, ext):
+        """JS File API 兜底: base64 数据解码后写入磁盘。
+        当 pywebview 的 File.path 不可用时使用此方法。"""
+        import base64, tempfile
+        if not data_b64: return None
+        try:
+            raw = base64.b64decode(data_b64)
+            if not ext: ext = '.mp3'
+            fd, tmp = tempfile.mkstemp(suffix=ext)
+            with os.fdopen(fd, 'wb') as f: f.write(raw)
+            result = _save_music_file(tmp, name)
+            os.unlink(tmp)
+            return result
+        except Exception as e:
+            print(f'[import_music_base64] {e}')
+            return None
+
     def get_music(self):
-        """返回所有已导入的磁盘歌曲列表。"""
+        """返回所有已导入的磁盘歌曲列表，按名称字母顺序排序，避免删除/重导入后 ID 顺序乱跳。"""
         _ensure_music_table()
-        c = sqlite3.connect(DB_PATH)
-        rows = c.execute('SELECT id, name FROM music ORDER BY id').fetchall()
-        c.close()
+        with DB_LOCK:
+            c = sqlite3.connect(DB_PATH, timeout=30.0)
+            rows = c.execute('SELECT id, name FROM music ORDER BY name').fetchall()
+            c.close()
         return [{'id': r[0], 'name': r[1], 'source': 'disk'} for r in rows]
 
     def rescan_music(self):
-        """扫描 data/music/ 目录，把未在数据库中登记的音频文件重新注册。
-        用来恢复因为旧版本升级或表结构变化导致的孤儿文件。"""
+        """扫描 data/music/ 目录，双向同步：
+        1. 把磁盘上的孤儿音频文件注册到 DB
+        2. 清理 DB 中磁盘文件已不存在的幽灵记录"""
         _ensure_music_table()
         if not os.path.isdir(MUSIC_DIR):
             return self.get_music()
         audio_exts = {'.mp3','.wav','.flac','.ogg','.m4a','.aac','.wma'}
-        c = sqlite3.connect(DB_PATH)
-        existing_files = {r[0] for r in c.execute('SELECT filename FROM music').fetchall()}
-        registered = 0
-        for fn in os.listdir(MUSIC_DIR):
-            ext = os.path.splitext(fn)[1].lower()
-            if ext not in audio_exts: continue
-            if fn in existing_files: continue
-            # 孤儿文件: 用文件名(去扩展名)作为默认显示名
-            display_name = os.path.splitext(fn)[0]
-            try:
-                c.execute('INSERT INTO music (name,filename) VALUES (?,?)', (display_name, fn))
-                registered += 1
-            except Exception as e:
-                print(f'[rescan_music] {fn}: {e}')
-        c.commit(); c.close()
+        with DB_LOCK:
+            c = sqlite3.connect(DB_PATH, timeout=30.0)
+            rows = c.execute('SELECT id, filename FROM music').fetchall()
+            existing_files = {r[1] for r in rows}
+            # 1) 注册孤儿文件
+            registered = 0
+            for fn in os.listdir(MUSIC_DIR):
+                ext = os.path.splitext(fn)[1].lower()
+                if ext not in audio_exts: continue
+                if fn in existing_files: continue
+                display_name = os.path.splitext(fn)[0]
+                try:
+                    c.execute('INSERT INTO music (name,filename) VALUES (?,?)', (display_name, fn))
+                    registered += 1
+                except Exception as e:
+                    print(f'[rescan_music] register {fn}: {e}')
+            # 2) 清理幽灵记录（DB 有记录但磁盘文件已被手动删除）
+            purged = 0
+            for song_id, filename in rows:
+                filepath = os.path.join(MUSIC_DIR, filename)
+                if not os.path.isfile(filepath):
+                    c.execute('DELETE FROM music WHERE id=?', (song_id,))
+                    purged += 1
+            c.commit(); c.close()
         if registered: print(f'[rescan_music] registered {registered} orphan file(s)')
+        if purged: print(f'[rescan_music] purged {purged} ghost record(s)')
         return self.get_music()
 
     def delete_music(self, song_id):
         """删除指定歌曲的磁盘文件和数据库记录。若多个记录共享同一文件，则保留文件。"""
         if not song_id: return False
-        c = sqlite3.connect(DB_PATH)
-        row = c.execute('SELECT filename FROM music WHERE id=?', (song_id,)).fetchone()
-        if row:
-            filename = os.path.basename(row[0])
-            others = c.execute('SELECT COUNT(*) FROM music WHERE filename=? AND id!=?', (filename, song_id)).fetchone()[0]
-            if others == 0:
-                filepath = os.path.join(MUSIC_DIR, filename)
-                if os.path.isfile(filepath): os.remove(filepath)
-            c.execute('DELETE FROM music WHERE id=?', (song_id,))
-            c.commit()
-        c.close()
+        with DB_LOCK:
+            c = sqlite3.connect(DB_PATH, timeout=30.0)
+            row = c.execute('SELECT filename FROM music WHERE id=?', (song_id,)).fetchone()
+            if row:
+                filename = os.path.basename(row[0])
+                others = c.execute('SELECT COUNT(*) FROM music WHERE filename=? AND id!=?', (filename, song_id)).fetchone()[0]
+                if others == 0:
+                    filepath = os.path.join(MUSIC_DIR, filename)
+                    if os.path.isfile(filepath): os.remove(filepath)
+                c.execute('DELETE FROM music WHERE id=?', (song_id,))
+                c.commit()
+            c.close()
         return True
 
 def main():
+    # Write startup log for debugging
+    try:
+        with open(os.path.join(DB_DIR, 'startup.log'), 'w', encoding='utf-8') as f:
+            f.write(f'frozen={getattr(sys,"frozen",False)}\n')
+            f.write(f'exe={sys.executable}\n')
+            f.write(f'db_dir={DB_DIR}\n')
+            f.write(f'db_path={DB_PATH}\n')
+            f.write(f'music_dir={MUSIC_DIR}\n')
+            f.write(f'assets_dir={ASSETS_DIR}\n')
+    except: pass
     init_db()
     port = start_server()
     url = f'http://127.0.0.1:{port}/login.html'
     win = webview.create_window(title=APP_TITLE, url=url, width=APP_WIDTH, height=APP_HEIGHT, min_size=(800,600), resizable=True)
     api = Api(win)
     win.expose(api.toggle_fullscreen, api.flash_window, api.restore_window, api.alert_sound, api.minimize,
-               api.import_music, api.import_music_path, api.get_music, api.delete_music, api.rescan_music)
+               api.import_music, api.import_music_path, api.import_music_base64, api.get_music, api.delete_music, api.rescan_music)
     webview.start(debug=False, http_server=False, gui='edgechromium')
 
 if __name__ == '__main__': main()
