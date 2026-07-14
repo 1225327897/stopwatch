@@ -532,6 +532,32 @@ class Api:
         c.close()
         return [{'id': r[0], 'name': r[1], 'source': 'disk'} for r in rows]
 
+    def rescan_music(self):
+        """扫描 data/music/ 目录，把未在数据库中登记的音频文件重新注册。
+        用来恢复因为旧版本升级或表结构变化导致的孤儿文件。"""
+        _ensure_music_table()
+        if not os.path.isdir(MUSIC_DIR):
+            return self.get_music()
+        audio_exts = {'.mp3','.wav','.flac','.ogg','.m4a','.aac','.wma'}
+        c = sqlite3.connect(DB_PATH)
+        existing_files = {r[0] for r in c.execute('SELECT filename FROM music').fetchall()}
+        registered = 0
+        for fn in os.listdir(MUSIC_DIR):
+            ext = os.path.splitext(fn)[1].lower()
+            if ext not in audio_exts: continue
+            if fn in existing_files: continue
+            # 孤儿文件: 用文件名(去扩展名)作为默认显示名
+            display_name = os.path.splitext(fn)[0]
+            try:
+                c.execute('INSERT INTO music (name,filename) VALUES (?,?)', (display_name, fn))
+                registered += 1
+                print(f'[rescan_music] registered orphan: {fn}')
+            except Exception as e:
+                print(f'[rescan_music] {fn}: {e}')
+        c.commit(); c.close()
+        if registered: print(f'[rescan_music] total registered: {registered}')
+        return self.get_music()
+
     def delete_music(self, song_id):
         """删除指定歌曲的磁盘文件和数据库记录。若多个记录共享同一文件，则保留文件。"""
         if not song_id: return False
@@ -555,7 +581,7 @@ def main():
     win = webview.create_window(title=APP_TITLE, url=url, width=APP_WIDTH, height=APP_HEIGHT, min_size=(800,600), resizable=True)
     api = Api(win)
     win.expose(api.toggle_fullscreen, api.flash_window, api.restore_window, api.alert_sound, api.minimize,
-               api.import_music, api.import_music_path, api.get_music, api.delete_music)
+               api.import_music, api.import_music_path, api.get_music, api.delete_music, api.rescan_music)
     webview.start(debug=False, http_server=False, gui='edgechromium')
 
 if __name__ == '__main__': main()

@@ -464,8 +464,11 @@
 
     // 通过 Python 文件对话框导入, 文件直接复制到磁盘, 不经过 JS/IDB 内存
     async _importFromPython(){
-      const res=await api('import_music');
-      if(!res||!res.length){showToast('未选择音频文件');return;}
+      let res;
+      try{res=await api('import_music');}
+      catch(e){console.error('import_music 异常:',e);showToast('❌ 打开文件对话框失败');return;}
+      if(res===null||res===undefined){showToast('❌ 打开文件对话框失败');return;}
+      if(!res.length){showToast('未选择音频文件');return;}
       for(const s of res){this.playlist.push({id:s.id,name:s.name,source:s.source||'disk'});}
       if(this.playlist.length&&this.currentTrack<0)this._loadTrack(0);
       this._render();
@@ -526,13 +529,14 @@
     },
 
     // 修复: 优先加载磁盘歌曲(流式,不占内存); IDB 作为浏览器/旧数据回退
+    // 启动时先 rescan 把孤儿文件重新注册, 再读取列表
     async _loadSaved(){
       this.playlist=[];
-      // 1) 磁盘歌曲
+      // 1) 先 rescan 孤儿文件 (旧版本升级/表丢失的兜底)
       try{
-        const disk=await api('get_music');
+        const disk=await api('rescan_music');
         if(disk&&disk.length){this.playlist.push(...disk.map(s=>({id:s.id,name:s.name,source:'disk'})));}
-      }catch(e){console.error('Player get_music:',e);}
+      }catch(e){console.error('Player rescan_music:',e);}
       // 2) IDB 旧歌曲
       try{
         const db=await this._getDb();
