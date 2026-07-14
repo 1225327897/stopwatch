@@ -42,8 +42,14 @@ def _save_music_file(src_path, name):
     ext = os.path.splitext(src_path)[1].lower()
     filename = hashlib.md5(src_path.encode('utf-8')).hexdigest() + ext
     dest = os.path.join(MUSIC_DIR, filename)
-    shutil.copy2(src_path, dest)
     c = sqlite3.connect(DB_PATH)
+    existing = c.execute('SELECT id FROM music WHERE filename=?', (filename,)).fetchone()
+    if existing:
+        c.execute('UPDATE music SET name=? WHERE id=?', (name, existing[0]))
+        song_id = existing[0]
+        c.commit(); c.close()
+        return {'id': song_id, 'name': name, 'source': 'disk'}
+    shutil.copy2(src_path, dest)
     c.execute('INSERT INTO music (name,filename) VALUES (?,?)', (name, filename))
     song_id = c.lastrowid
     c.commit(); c.close()
@@ -527,13 +533,16 @@ class Api:
         return [{'id': r[0], 'name': r[1], 'source': 'disk'} for r in rows]
 
     def delete_music(self, song_id):
-        """删除指定歌曲的磁盘文件和数据库记录。"""
+        """删除指定歌曲的磁盘文件和数据库记录。若多个记录共享同一文件，则保留文件。"""
         if not song_id: return False
         c = sqlite3.connect(DB_PATH)
         row = c.execute('SELECT filename FROM music WHERE id=?', (song_id,)).fetchone()
         if row:
-            filepath = os.path.join(MUSIC_DIR, os.path.basename(row[0]))
-            if os.path.isfile(filepath): os.remove(filepath)
+            filename = os.path.basename(row[0])
+            others = c.execute('SELECT COUNT(*) FROM music WHERE filename=? AND id!=?', (filename, song_id)).fetchone()[0]
+            if others == 0:
+                filepath = os.path.join(MUSIC_DIR, filename)
+                if os.path.isfile(filepath): os.remove(filepath)
             c.execute('DELETE FROM music WHERE id=?', (song_id,))
             c.commit()
         c.close()
