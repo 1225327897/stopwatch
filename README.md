@@ -55,9 +55,8 @@ stopwatch/
 │   ├── icon.ico
 │   └── 投喂作者.jpg
 ├── data/                # 运行时数据 (不入库)
-│   └── stopwatch.db
-├── docs/                # 文档
-│   └── flash_fix.patch  # 任务栏闪动修复补丁存档
+│   ├── stopwatch.db      # SQLite 数据库
+│   └── music/            # 导入的音乐文件 (MD5 命名)
 ├── src/                 # 源代码
 │   ├── stopwatch.py      # 主程序 (Python 后端 + API)
 │   ├── stopwatch.html    # 主界面
@@ -68,7 +67,7 @@ stopwatch/
 │   ├── login.css         # 登录页样式
 │   ├── login.js          # 登录页逻辑
 │   ├── stopwatch.spec    # PyInstaller 打包配置
-│   └── 投喂作者.jpg
+│   └── 投喂作者.jpg       # 打赏二维码 (PyInstaller 打包用)
 ├── deploy.bat            # 一键部署脚本 (Git Pull + 编译)
 ├── .gitignore
 └── 须臾.exe              # 编译产物 (不入库)
